@@ -1,0 +1,20 @@
+# Build output
+bin/
+obj/
+build/
+dist/
+TestResults/
+
+# Editors
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Local agent settings
+.claude/
+
+# Windows
+Thumbs.db
+Desktop.ini

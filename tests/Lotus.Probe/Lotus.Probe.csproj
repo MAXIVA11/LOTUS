@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Lotus.Probe</RootNamespace>
+    <AssemblyName>Lotus.Probe</AssemblyName>
+    <Description>Developer tool for testing device control calls on real hardware. Not shipped.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lotus.Core\Lotus.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,124 @@
+<Window x:Class="Lotus.Setup.SetupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="clr-namespace:Lotus.Ui"
+        Title="LOTUS Setup" Width="780" Height="500" ResizeMode="CanMinimize"
+        Background="{StaticResource B.Ink}" Foreground="{StaticResource B.Text}"
+        WindowStartupLocation="CenterScreen" UseLayoutRounding="True" SnapsToDevicePixels="True"
+        Icon="pack://application:,,,/Assets/lotus.ico">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="40" ResizeBorderThickness="0" GlassFrameThickness="0" CornerRadius="0"
+                      UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="270" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- ============ left: identity ============ -->
+        <Grid Background="{StaticResource B.Black}">
+            <Rectangle Fill="{StaticResource B.Dots}" />
+            <StackPanel VerticalAlignment="Center" Margin="0,0,0,30">
+                <ui:LotusMark Width="150" Height="150" ShowTile="False" />
+                <ui:GlitchText Text="LOTUS" FontSize="64" HorizontalAlignment="Center" Margin="0,2,0,0" />
+                <TextBlock Style="{StaticResource T.Label}" TextAlignment="Center" LineHeight="17" Margin="0,2,0,0"
+                           Text="LOCAL OPERATIONAL&#x0a;TRUSTED USB SYSTEM" />
+            </StackPanel>
+            <StackPanel VerticalAlignment="Bottom">
+                <TextBlock x:Name="VersionText" Style="{StaticResource T.Label}" HorizontalAlignment="Center"
+                           Margin="0,0,0,12" />
+                <Rectangle Height="10" Fill="{StaticResource B.Hazard}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ============ right: steps ============ -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                        WindowChrome.IsHitTestVisibleInChrome="True">
+                <Button Style="{StaticResource Btn.Chrome}" Content="&#xE921;" Click="OnMinimize" ToolTip="Minimize" />
+                <Button x:Name="CloseButton" Style="{StaticResource Btn.ChromeClose}" Content="&#xE8BB;"
+                        Click="OnCloseClick" ToolTip="Close" />
+            </StackPanel>
+
+            <!-- welcome -->
+            <StackPanel x:Name="WelcomePanel" Grid.Row="1" Margin="34,6,34,0">
+                <ui:GlitchText x:Name="WelcomeTitle" Text="INSTALL" FontSize="46" HorizontalAlignment="Left" />
+                <TextBlock x:Name="WelcomeIntro" Style="{StaticResource T.Body}" Margin="0,6,0,0" />
+                <ItemsControl x:Name="WelcomeList" Focusable="False" Margin="0,10,0,0">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,5,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="22" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="&gt;" Style="{StaticResource T.Mono}"
+                                           Foreground="{StaticResource B.Cyan}" Margin="0,1,0,0" />
+                                <TextBlock Grid.Column="1" Text="{Binding}" Style="{StaticResource T.Body}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <Border BorderBrush="{StaticResource B.Yellow}" BorderThickness="3,0,0,0" Padding="12,2,0,3"
+                        Margin="0,18,0,0">
+                    <TextBlock x:Name="WelcomeNote" Style="{StaticResource T.Body}"
+                               Foreground="{StaticResource B.Yellow}" />
+                </Border>
+                <TextBlock x:Name="WelcomePath" Style="{StaticResource T.Label}" Margin="0,16,0,0"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+
+            <!-- progress and result -->
+            <Grid x:Name="WorkPanel" Grid.Row="1" Margin="34,6,34,0" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <ui:GlitchText x:Name="WorkTitle" Text="INSTALLING" FontSize="46" HorizontalAlignment="Left" />
+                <TextBlock x:Name="WorkSummary" Grid.Row="1" Style="{StaticResource T.Body}" Margin="0,6,0,10" />
+                <Border Grid.Row="2" Background="{StaticResource B.Black}" BorderBrush="{StaticResource B.Line}"
+                        BorderThickness="1">
+                    <ScrollViewer x:Name="LogScroll" VerticalScrollBarVisibility="Auto" Focusable="False">
+                        <ItemsControl x:Name="LogList" Focusable="False" Margin="12,8,12,8">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,2,0,2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="20" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="&gt;" Style="{StaticResource T.Mono}" FontSize="12"
+                                                   Foreground="{StaticResource B.Cyan}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding}" Style="{StaticResource T.Mono}"
+                                                   FontSize="12" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+
+            <!-- buttons -->
+            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,30,24">
+                <Button x:Name="SecondaryButton" Style="{StaticResource Btn.Ghost}" Content="CANCEL"
+                        Click="OnSecondary" Margin="0,0,8,0" />
+                <Button x:Name="PrimaryButton" Style="{StaticResource Btn.Primary}" Content="INSTALL"
+                        Click="OnPrimary" MinWidth="170" IsDefault="True" />
+            </StackPanel>
+        </Grid>
+
+        <Rectangle Grid.ColumnSpan="2" Fill="{StaticResource B.Scanlines}" IsHitTestVisible="False" />
+        <Border Grid.ColumnSpan="2" BorderBrush="{StaticResource B.Line}" BorderThickness="1"
+                IsHitTestVisible="False" />
+    </Grid>
+</Window>

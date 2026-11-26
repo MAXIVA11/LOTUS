@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Lotus.Core</RootNamespace>
+    <AssemblyName>Lotus.Core</AssemblyName>
+    <Description>LOTUS policy engine and USB device control</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Lotus.Tests" />
+    <InternalsVisibleTo Include="Lotus.Probe" />
+  </ItemGroup>
+</Project>

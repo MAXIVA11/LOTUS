@@ -1,0 +1,36 @@
+<Window x:Class="Lotus.App.ToastWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="clr-namespace:Lotus.Ui"
+        Title="LOTUS" Width="420" SizeToContent="Height" WindowStyle="None" ResizeMode="NoResize"
+        AllowsTransparency="True" Background="Transparent" ShowInTaskbar="False" ShowActivated="False"
+        Topmost="True" Focusable="False" UseLayoutRounding="True" Cursor="Hand"
+        ToolTip="Open LOTUS">
+    <Grid x:Name="Root" Margin="0,0,8,8">
+        <!-- hard offset shadow, like the buttons -->
+        <Border Background="{StaticResource B.Pink}" Margin="6,6,-6,-6" />
+        <Border Background="{StaticResource B.Black}" BorderBrush="{StaticResource B.Pink}" BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="14" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Rectangle Fill="{StaticResource B.Hazard}" />
+                <StackPanel Grid.Column="1" Margin="16,10,8,14">
+                    <TextBlock Text="//  LOTUS" Style="{StaticResource T.Label}" />
+                    <ui:GlitchText x:Name="Headline" Text="BLOCKED" FontSize="40" HorizontalAlignment="Left"
+                                   Margin="-2,-4,0,-2" />
+                    <TextBlock x:Name="DeviceName" FontFamily="{StaticResource F.Body}" FontSize="15"
+                               FontWeight="SemiBold" Foreground="{StaticResource B.Text}"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="ReasonText" Style="{StaticResource T.Dim}" FontSize="12.5" LineHeight="17"
+                               Margin="0,4,0,0" />
+                </StackPanel>
+                <Button Grid.Column="2" Style="{StaticResource Btn.Chrome}" Content="&#xE8BB;" Width="34" Height="30"
+                        VerticalAlignment="Top" Click="OnDismiss" ToolTip="Dismiss" Cursor="Arrow" />
+                <Rectangle Grid.ColumnSpan="3" Fill="{StaticResource B.Scanlines}" IsHitTestVisible="False" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

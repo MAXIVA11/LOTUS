@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>Lotus.App</RootNamespace>
+    <AssemblyName>LOTUS</AssemblyName>
+    <Description>LOTUS, Local Operational Trusted USB System</Description>
+    <ApplicationIcon>Assets\lotus.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <StartupObject>Lotus.App.Program</StartupObject>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets\lotus.ico" />
+    <Resource Include="Assets\lotus.png" />
+    <Reference Include="System.ServiceProcess" />
+    <ProjectReference Include="..\Lotus.Core\Lotus.Core.csproj" />
+  </ItemGroup>
+</Project>

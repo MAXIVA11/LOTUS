@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Lotus.Guard</RootNamespace>
+    <AssemblyName>LotusGuard</AssemblyName>
+    <Description>LOTUS Guard, the service that enforces the LOTUS device policy</Description>
+    <ApplicationIcon>..\Lotus.App\Assets\lotus.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.ServiceProcess" />
+    <ProjectReference Include="..\Lotus.Core\Lotus.Core.csproj" />
+  </ItemGroup>
+</Project>
