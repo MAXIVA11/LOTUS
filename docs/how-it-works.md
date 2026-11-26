@@ -46,6 +46,8 @@ A composite device does not list its interfaces until a moment after it is plugg
 
 ## The decision
 
+![A device on a USB port passes five checks from left to right. Three of them allow it, two of them block it, and a device that no check stops is allowed.](assets/decision-flow.svg)
+
 For each device, in this order:
 
 1. LOTUS is disarmed: allow.
