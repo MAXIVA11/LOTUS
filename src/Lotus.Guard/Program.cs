@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.ServiceProcess;
+using System.Text;
+using System.Threading;
 using Lotus.Core;
 
 namespace Lotus.Guard
@@ -40,6 +42,7 @@ namespace Lotus.Guard
             Console.WriteLine("  LotusGuard --scan          List USB devices and what the current policy says about each.");
             Console.WriteLine("  LotusGuard --console       Enforce the policy from this window until you press Enter.");
             Console.WriteLine("  LotusGuard --release-all   Switch every blocked device back on and lift read-only mode.");
+            Console.WriteLine("                             Asks for the LOTUS password when one is set.");
         }
 
         private static int RunConsole()
@@ -56,13 +59,24 @@ namespace Lotus.Guard
 
         private static int Scan()
         {
-            PolicyLoadResult loaded = PolicyStore.Load(LotusPaths.PolicyFile);
+            StoreContent stored = SecureStore.ReadUnverified(LotusPaths.StoreFile);
+            string source = stored != null ? "Store" : "Default";
+            Policy policy = stored?.Policy;
+            if (policy == null)
+            {
+                // Before the service has started for the first time after an update
+                // from LOTUS 1.0, the old policy file is still the one that counts.
+                PolicyLoadResult legacy = PolicyStore.Load(LotusPaths.LegacyPolicyFile);
+                policy = legacy.Policy;
+                if (legacy.Source != PolicySource.Default) source = "Legacy";
+            }
+
             Ledger ledger = Ledger.Load(LotusPaths.LedgerFile, out string _);
             var backend = new WindowsDeviceBackend();
             var list = new List<object>();
             foreach (UsbDevice device in backend.Scan())
             {
-                DeviceStatus status = DeviceView.Resolve(loaded.Policy, device, ledger, TimeSpan.MaxValue);
+                DeviceStatus status = DeviceView.Resolve(policy, device, ledger, TimeSpan.MaxValue);
                 list.Add(new Dictionary<string, object>
                 {
                     ["id"] = device.InstanceId,
@@ -73,18 +87,21 @@ namespace Lotus.Guard
                     ["kinds"] = string.Join(", ", UsbClassifier.Labels(device.Kinds)),
                     ["functions"] = string.Join(" ", device.Functions),
                     ["functionsKnown"] = device.FunctionsKnown,
+                    ["described"] = device.Described,
                     ["started"] = device.Started,
                     ["problem"] = device.Problem,
                     ["canDisable"] = device.Disableable,
                     ["systemDisk"] = device.IsSystemDisk,
                     ["state"] = status.State.ToString(),
-                    ["why"] = PolicyEngine.Explain(status.Decision, loaded.Policy)
+                    ["why"] = PolicyEngine.Explain(status.Decision, policy)
                 });
             }
             Console.WriteLine(Json.Write(new Dictionary<string, object>
             {
-                ["policy"] = GuardWorker.Summarize(loaded.Policy),
-                ["policySource"] = loaded.Source.ToString(),
+                ["policy"] = GuardWorker.Summarize(policy),
+                ["policySource"] = source,
+                ["hasPassword"] = stored?.Password != null,
+                ["ledgerEntries"] = ledger.Count,
                 ["systemDiskError"] = backend.SystemDiskError,
                 ["devices"] = list
             }));
@@ -93,6 +110,22 @@ namespace Lotus.Guard
 
         private static int ReleaseAll()
         {
+            // This switches every blocked device back on, so it is held behind the
+            // same password as the policy.
+            StoreContent stored = SecureStore.ReadUnverified(LotusPaths.StoreFile);
+            if (stored?.Password != null)
+            {
+                string password = Environment.GetEnvironmentVariable("LOTUS_PASSWORD");
+                if (string.IsNullOrEmpty(password)) password = ReadPassword("LOTUS password: ");
+                if (!stored.Password.Verify(password))
+                {
+                    new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile)
+                        .Write(EventTypes.Security, "A wrong LOTUS password was entered for --release-all.");
+                    Console.WriteLine("That is not the LOTUS password. Nothing was changed.");
+                    return 3;
+                }
+            }
+
             var log = new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile);
             Ledger ledger = Ledger.Load(LotusPaths.LedgerFile, out string error);
             if (error != null) Console.WriteLine("Warning: " + error);
@@ -105,6 +138,27 @@ namespace Lotus.Guard
                 : problems + " item(s) could not be released. See the activity log.");
             return problems == 0 ? 0 : 1;
         }
+
+        private static string ReadPassword(string prompt)
+        {
+            Console.Write(prompt);
+            if (Console.IsInputRedirected) return Console.ReadLine() ?? "";
+
+            var text = new StringBuilder();
+            while (true)
+            {
+                ConsoleKeyInfo key = Console.ReadKey(true);
+                if (key.Key == ConsoleKey.Enter) break;
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (text.Length > 0) text.Length--;
+                    continue;
+                }
+                if (!char.IsControl(key.KeyChar)) text.Append(key.KeyChar);
+            }
+            Console.WriteLine();
+            return text.ToString();
+        }
     }
 
     internal sealed class GuardService : ServiceBase
@@ -114,15 +168,21 @@ namespace Lotus.Guard
         public GuardService()
         {
             ServiceName = LotusPaths.ServiceName;
-            CanStop = true;
+            // Windows cannot be asked to stop this service. It stops when setup asks
+            // for it over the control pipe with the LOTUS password, and when Windows
+            // shuts down.
+            CanStop = false;
             CanShutdown = true;
             CanPauseAndContinue = false;
-            AutoLog = true;
+            // The activity log is the record. Writing to the Windows event log as
+            // well would leave a registration behind after an uninstall.
+            AutoLog = false;
         }
 
         protected override void OnStart(string[] args)
         {
             worker = new GuardWorker();
+            worker.StopRequested += purpose => ThreadPool.QueueUserWorkItem(_ => Stop());
             worker.Start();
         }
 

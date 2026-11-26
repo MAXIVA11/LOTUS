@@ -135,25 +135,7 @@ namespace Lotus.Core
             foreach (UsbDevice device in devices)
             {
                 present.Add(device.InstanceId);
-                TimeSpan seenFor = now - firstSeen[device.InstanceId];
-                DeviceStatus status = DeviceView.Resolve(policy, device, ledger, seenFor);
-                result.Devices.Add(status);
-                if (status.State == DeviceState.OffElsewhere) continue;
-
-                LedgerEntry entry = ledger.Get(device.InstanceId);
-                if (status.Decision.IsBlock)
-                {
-                    if (device.IsOff)
-                    {
-                        StillBlocked(device, status, entry);
-                        continue;
-                    }
-                    Block(device, status, entry, now, result);
-                }
-                else if (entry != null)
-                {
-                    Release(device, entry, status, result);
-                }
+                Handle(policy, device, now, result);
             }
 
             ReleaseAbsent(policy, present, result);
@@ -166,6 +148,109 @@ namespace Lotus.Core
             return result;
         }
 
+        /// <summary>Decides about one connected device and acts on the decision.</summary>
+        private void Handle(Policy policy, UsbDevice device, DateTime now, PassResult result)
+        {
+            TimeSpan seenFor = now - firstSeen[device.InstanceId];
+            DeviceStatus status = DeviceView.Resolve(policy, device, ledger, seenFor);
+            result.Devices.Add(status);
+            if (status.State == DeviceState.OffElsewhere) return;
+
+            LedgerEntry entry = ledger.Get(device.InstanceId);
+            if (entry != null && entry.Premarked)
+            {
+                // It was marked while unplugged and has now shown up. From here on it
+                // is an ordinary blocked device.
+                entry.Premarked = false;
+                if (device.Described)
+                {
+                    entry.Functions = new List<string>(device.Functions);
+                    entry.Kinds = device.Kinds;
+                    entry.KindsKnown = true;
+                }
+                if (!string.IsNullOrEmpty(device.Name)) entry.Name = device.Name;
+                saveLedger(ledger);
+            }
+
+            if (status.Decision.IsBlock)
+            {
+                if (device.IsOff)
+                {
+                    StillBlocked(device, status, entry);
+                    return;
+                }
+                Block(device, status, entry, now, result);
+            }
+            else if (entry != null && status.Decision.Verdict != Verdict.Pending)
+            {
+                Release(device, entry, status, result);
+            }
+        }
+
+        /// <summary>
+        /// Decides about a single device the instant Windows reports it, without
+        /// looking at anything else. A full pass still follows, but by then a device
+        /// the policy blocks is already off. Returns null when the ID is not a
+        /// connected USB device.
+        /// </summary>
+        public DeviceStatus FastPass(Policy policy, string instanceId)
+        {
+            if (policy == null) throw new ArgumentNullException(nameof(policy));
+            // Before the first full pass nothing is known about what was already there.
+            if (firstPass) return null;
+
+            UsbDevice device = backend.ScanOne(instanceId);
+            if (device == null) return null;
+
+            DateTime now = clock();
+            arrivedNow.Clear();
+            NoteArrival(device, now);
+            var result = new PassResult();
+            Handle(policy, device, now, result);
+            return result.Devices.Count > 0 ? result.Devices[0] : null;
+        }
+
+        /// <summary>
+        /// Marks devices that are not connected right now, and that the policy would
+        /// block on sight, as disabled. Windows then keeps them off from the first
+        /// instant they are plugged in. Returns how many were marked.
+        /// </summary>
+        public int MarkAbsent(Policy policy)
+        {
+            if (policy == null) throw new ArgumentNullException(nameof(policy));
+            if (!policy.Armed || (policy.Storage != StorageMode.Block && policy.Pnp != PnpMode.Block)) return 0;
+
+            DateTime now = clock();
+            var candidates = new List<LedgerEntry>();
+            foreach (UsbDevice device in backend.ScanAbsent())
+            {
+                if (ledger.Contains(device.InstanceId)) continue;
+                // Switched off by someone else. Not LOTUS's to manage.
+                if (device.IsOff) continue;
+                // No waiting here: only a device that is blocked whatever it turns out to be.
+                Decision decision = PolicyEngine.Evaluate(policy, device, TimeSpan.Zero);
+                if (!decision.IsBlock) continue;
+                LedgerEntry entry = LedgerEntry.From(device, decision.Reason, now);
+                entry.Premarked = true;
+                candidates.Add(entry);
+            }
+            if (candidates.Count == 0) return 0;
+
+            // Ledger first, so a stop halfway never leaves a mark nobody remembers.
+            foreach (LedgerEntry entry in candidates) ledger.Add(entry);
+            saveLedger(ledger);
+
+            int marked = 0;
+            foreach (LedgerEntry entry in candidates)
+            {
+                DeviceOpResult op = backend.BlockAbsent(entry.InstanceId);
+                if (op.Ok) marked++;
+                else ledger.Remove(entry.InstanceId);
+            }
+            saveLedger(ledger);
+            return marked;
+        }
+
         private void TrackArrivals(List<UsbDevice> devices, DateTime now)
         {
             arrivedNow.Clear();
@@ -173,17 +258,7 @@ namespace Lotus.Core
             foreach (UsbDevice device in devices)
             {
                 current.Add(device.InstanceId);
-                LedgerEntry known = ledger.Get(device.InstanceId);
-                string name = known != null && !string.IsNullOrEmpty(known.Name) ? known.Name : device.Name;
-                // A device gets its proper name a moment after it appears, so keep the latest.
-                names[device.InstanceId] = name;
-                if (firstSeen.ContainsKey(device.InstanceId)) continue;
-                // Devices that were already there when the service started have had
-                // plenty of time to identify themselves.
-                firstSeen[device.InstanceId] = firstPass ? now - PolicyEngine.IdentifyGrace : now;
-                if (firstPass) continue;
-                arrivedNow.Add(device.InstanceId);
-                Log(EventTypes.Connected, name + " was connected.", device.InstanceId, name);
+                NoteArrival(device, now);
             }
 
             foreach (string id in new List<string>(firstSeen.Keys))
@@ -201,6 +276,21 @@ namespace Lotus.Core
             }
         }
 
+        private void NoteArrival(UsbDevice device, DateTime now)
+        {
+            LedgerEntry known = ledger.Get(device.InstanceId);
+            string name = known != null && !string.IsNullOrEmpty(known.Name) ? known.Name : device.Name;
+            // A device gets its proper name a moment after it appears, so keep the latest.
+            names[device.InstanceId] = name;
+            if (firstSeen.ContainsKey(device.InstanceId)) return;
+            // Devices that were already there when the service started have had
+            // plenty of time to identify themselves.
+            firstSeen[device.InstanceId] = firstPass ? now - PolicyEngine.IdentifyGrace : now;
+            if (firstPass) return;
+            arrivedNow.Add(device.InstanceId);
+            Log(EventTypes.Connected, name + " was connected.", device.InstanceId, name);
+        }
+
         /// <summary>The device is already off and the policy still blocks it.</summary>
         private void StillBlocked(UsbDevice device, DeviceStatus status, LedgerEntry entry)
         {
@@ -216,7 +306,7 @@ namespace Lotus.Core
             if (arrivedNow.Contains(device.InstanceId))
             {
                 Log(EventTypes.Blocked,
-                    device.Name + " is blocked because " + PolicyEngine.BlockReason(status.Decision.Reason) + ".",
+                    device.Name + " is blocked because " + PolicyEngine.BlockReason(status.Decision) + ".",
                     device.InstanceId, device.Name);
             }
         }
@@ -252,7 +342,7 @@ namespace Lotus.Core
                 status.State = DeviceState.Blocked;
                 result.Blocked++;
                 Log(EventTypes.Blocked,
-                    device.Name + " was blocked because " + PolicyEngine.BlockReason(status.Decision.Reason) + ".",
+                    device.Name + " was blocked because " + PolicyEngine.BlockReason(status.Decision) + ".",
                     device.InstanceId, device.Name);
                 return;
             }
@@ -270,7 +360,7 @@ namespace Lotus.Core
             DeviceOpResult op = backend.Unblock(device.InstanceId);
             if (op.Ok)
             {
-                bool silent = entry.Restart;
+                bool silent = entry.Restart || entry.Premarked;
                 ledger.Remove(device.InstanceId);
                 saveLedger(ledger);
                 failures.Remove(device.InstanceId);
@@ -304,7 +394,10 @@ namespace Lotus.Core
             foreach (LedgerEntry entry in ledger.Entries)
             {
                 if (present.Contains(entry.InstanceId)) continue;
-                Decision decision = PolicyEngine.Evaluate(policy, entry.ToDevice(), TimeSpan.MaxValue);
+                // An entry that never learned what the device does is only kept while
+                // the policy blocks the device whatever it is.
+                Decision decision = PolicyEngine.Evaluate(policy, entry.ToDevice(),
+                    entry.KindsKnown ? TimeSpan.MaxValue : TimeSpan.Zero);
                 if (decision.IsBlock) continue;
 
                 DeviceOpResult op = backend.Unblock(entry.InstanceId);
@@ -321,7 +414,7 @@ namespace Lotus.Core
                 ledger.Remove(entry.InstanceId);
                 saveLedger(ledger);
                 failures.Remove(entry.InstanceId);
-                if (!entry.Restart)
+                if (!entry.Restart && !entry.Premarked)
                 {
                     result.Released++;
                     Log(EventTypes.Released, entry.Name + " is allowed again. It is not connected right now.",
@@ -421,7 +514,7 @@ namespace Lotus.Core
                 if (op.Ok)
                 {
                     ledger.Remove(entry.InstanceId);
-                    if (!entry.Restart)
+                    if (!entry.Restart && !entry.Premarked)
                     {
                         Log(EventTypes.Released, entry.Name + " is allowed again.", entry.InstanceId, entry.Name);
                     }

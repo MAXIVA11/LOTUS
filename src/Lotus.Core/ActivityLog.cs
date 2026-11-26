@@ -18,6 +18,10 @@ namespace Lotus.Core
         public const string ReadOnlyOff = "readonly_off";
         public const string Warning = "warning";
         public const string Error = "error";
+        /// <summary>Someone or something interfered with LOTUS itself.</summary>
+        public const string Tamper = "tamper";
+        /// <summary>Password events: set, changed, entered wrongly.</summary>
+        public const string Security = "security";
     }
 
     public sealed class LotusEvent

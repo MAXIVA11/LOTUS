@@ -25,6 +25,22 @@ namespace Lotus.Core
 
         public int BlockCalls;
         public int UnblockCalls;
+        public int ScanCalls;
+
+        /// <summary>Devices Windows remembers from earlier, by instance ID.</summary>
+        private readonly Dictionary<string, UsbDevice> remembered =
+            new Dictionary<string, UsbDevice>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Adds a device Windows has seen before but that is not plugged in.</summary>
+        public void Remember(UsbDevice device)
+        {
+            lock (gate)
+            {
+                UsbDevice copy = device.Clone();
+                copy.InstanceId = Policy.NormalizeId(copy.InstanceId);
+                remembered[copy.InstanceId] = copy;
+            }
+        }
 
         public void Plug(UsbDevice device)
         {
@@ -34,6 +50,7 @@ namespace Lotus.Core
                 copy.InstanceId = Policy.NormalizeId(copy.InstanceId);
                 copy.Present = true;
                 originals[copy.InstanceId] = copy.Clone();
+                remembered[copy.InstanceId] = copy.Clone();
                 Unplug(copy.InstanceId);
                 if (disabledMarks.Contains(copy.InstanceId))
                 {
@@ -84,9 +101,54 @@ namespace Lotus.Core
         {
             lock (gate)
             {
+                ScanCalls++;
                 var copy = new List<UsbDevice>();
                 foreach (UsbDevice device in plugged) copy.Add(device.Clone());
                 return copy;
+            }
+        }
+
+        public UsbDevice ScanOne(string instanceId)
+        {
+            lock (gate) return Find(instanceId)?.Clone();
+        }
+
+        public List<UsbDevice> ScanAbsent()
+        {
+            lock (gate)
+            {
+                var absent = new List<UsbDevice>();
+                foreach (UsbDevice device in remembered.Values)
+                {
+                    if (Find(device.InstanceId) != null) continue;
+                    UsbDevice copy = device.Clone();
+                    copy.Present = false;
+                    copy.Started = false;
+                    copy.Problem = disabledMarks.Contains(copy.InstanceId) ? UsbDevice.ProblemDisabled : 0;
+                    if (copy.IsComposite && !copy.Described)
+                    {
+                        // Windows does not keep the interface list of an unplugged composite device.
+                        copy.Functions = new List<string>();
+                        copy.Kinds = DeviceKinds.None;
+                        copy.FunctionsKnown = false;
+                    }
+                    absent.Add(copy);
+                }
+                return absent;
+            }
+        }
+
+        public DeviceOpResult BlockAbsent(string instanceId)
+        {
+            lock (gate)
+            {
+                if (Find(instanceId) != null) return DeviceOpResult.Fail("The device is connected.");
+                if (!remembered.ContainsKey(instanceId))
+                {
+                    return new DeviceOpResult { Ok = false, Gone = true, Message = "Could not find the device record." };
+                }
+                disabledMarks.Add(Policy.NormalizeId(instanceId));
+                return DeviceOpResult.Success();
             }
         }
 
@@ -153,7 +215,7 @@ namespace Lotus.Core
         {
             device.Problem = problem;
             device.Started = false;
-            if (device.IsComposite)
+            if (device.IsComposite && !device.Described)
             {
                 // A composite device that is off no longer lists its interfaces.
                 device.Functions = new List<string>();

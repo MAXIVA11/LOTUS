@@ -230,8 +230,24 @@ namespace Lotus.App
             // Trust the keyboard and mouse models but leave the headset out, so the
             // screenshots show a blocked device.
             plan.TrustCandidates.RemoveAll(d => d.Name.Contains("HyperX"));
-            vm.Commit(plan, true);
             window.HideOverlay();
+
+            // Arming for the first time asks for a password.
+            window.ShowOverlayForScreenshot(new ConfirmRequest
+            {
+                Title = "SET A PASSWORD",
+                Intro = "Choose a LOTUS password before arming. Every later change to the policy asks for it, " +
+                        "and so does removing LOTUS. LOTUS cannot recover it if it is lost.",
+                ConfirmText = "SET AND ARM",
+                Ask = PasswordAsk.Create
+            });
+            window.FillPasswordsForScreenshot();
+            Shot("03b-password");
+            window.HideOverlay();
+
+            Policy armed = vm.Finish(plan, true);
+            backend.SavePolicy(armed, "", "demo password");
+            vm.Accepted(armed, true);
 
             backend.ToggleStick();
             window.RefreshNow();

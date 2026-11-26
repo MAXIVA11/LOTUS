@@ -65,6 +65,11 @@ namespace Lotus.Core
         /// the case for a moment after it is plugged in and for as long as it is disabled.
         /// </summary>
         public bool FunctionsKnown = true;
+        /// <summary>
+        /// The functions were read from the device's own descriptors, so they are
+        /// right even while the device is switched off.
+        /// </summary>
+        public bool Described;
         public DeviceKinds Kinds;
         public string Location = "";
 

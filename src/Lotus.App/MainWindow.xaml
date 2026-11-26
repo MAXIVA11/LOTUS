@@ -636,13 +636,34 @@
                             <ui:GlitchText Text="ABOUT" Style="{StaticResource PageTitle}" />
                             <TextBlock Style="{StaticResource T.Body}" Margin="0,4,0,16" MaxWidth="760"
                                        HorizontalAlignment="Left"
-                                       Text="LOTUS decides which USB devices are allowed to work on this computer. It runs entirely on this PC and never contacts a server." />
+                                       Text="LOTUS decides which USB devices are allowed to work on this computer." />
+
+                            <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="PROTECTION" Style="{StaticResource T.CardTitle}" />
+                                        <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
+                                                   Text="{Binding ProtectionText}" />
+                                        <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
+                                                   Text="The policy is kept in a sealed store that only LOTUS Guard can write. If someone edits or deletes it, LOTUS Guard puts its own copy back and notes it in the activity log." />
+                                    </StackPanel>
+                                    <Button x:Name="PasswordButton" Grid.Column="1" Style="{StaticResource Btn.Ghost}"
+                                            Content="{Binding PasswordButtonText}" Click="OnChangePassword"
+                                            VerticalAlignment="Top" Margin="20,0,0,0" />
+                                </Grid>
+                            </Border>
 
                             <Border Style="{StaticResource Card}" Margin="0,0,0,14">
                                 <StackPanel>
                                     <TextBlock Text="HOW IT BLOCKS" Style="{StaticResource T.CardTitle}" />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
-                                               Text="LOTUS Guard is a Windows service that watches the USB ports. When a device the policy blocks is plugged in, the service switches it off the way Device Manager does. The device stays off, also after a restart, until the policy allows it or you trust it." />
+                                               Text="LOTUS Guard is a Windows service that watches the USB ports. It reads what a device says it is the moment Windows reports it, and switches a device the policy blocks off the way Device Manager does. The device stays off, also after a restart, until the policy allows it or you trust it." />
+                                    <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
+                                               Text="Devices this PC has seen before, and that the policy would block, are marked as switched off while they are unplugged. They are already off when they come back." />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
                                                Text="Read-only mode uses the removable storage policy built into Windows, so the storage stack itself refuses the write." />
                                 </StackPanel>
@@ -652,9 +673,9 @@
                                 <StackPanel>
                                     <TextBlock Text="WHAT IT DOES NOT DO" Style="{StaticResource T.CardTitle}" />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
-                                               Text="A device that has never been seen before can be active for a moment before it is switched off, usually well under a second." />
+                                               Text="LOTUS trusts a device by what the device reports: vendor, product, serial number and functions. A device built to copy all of those from a trusted one is treated as that device." />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
-                                               Text="Anyone with administrator rights on this PC can change the policy or stop the service. LOTUS guards against people and devices that lack those rights." />
+                                               Text="The password and the sealed store stop casual changes. Someone with administrator rights who is determined to remove LOTUS, for example from Safe Mode, can still do so." />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
                                                Text="LOTUS covers USB ports. It does not manage Bluetooth pairing, Thunderbolt docks or network shares." />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
@@ -729,6 +750,27 @@
                             <TextBlock x:Name="OverlayWarningText" Style="{StaticResource T.Body}"
                                        Foreground="{StaticResource B.Yellow}" />
                         </Border>
+
+                        <StackPanel x:Name="OverlayPasswords" Margin="0,16,0,0" Visibility="Collapsed">
+                            <StackPanel x:Name="OverlayPwCurrentRow">
+                                <TextBlock x:Name="OverlayPwCurrentLabel" Text="PASSWORD" Style="{StaticResource T.Label}" />
+                                <PasswordBox x:Name="OverlayPwCurrent" Style="{StaticResource Field.Password}"
+                                             Margin="0,6,0,12" MaxLength="256" />
+                            </StackPanel>
+                            <StackPanel x:Name="OverlayPwNewRow">
+                                <TextBlock Text="NEW PASSWORD, AT LEAST 8 CHARACTERS" Style="{StaticResource T.Label}" />
+                                <PasswordBox x:Name="OverlayPwNew" Style="{StaticResource Field.Password}"
+                                             Margin="0,6,0,12" MaxLength="256" />
+                            </StackPanel>
+                            <StackPanel x:Name="OverlayPwRepeatRow">
+                                <TextBlock Text="THE NEW PASSWORD AGAIN" Style="{StaticResource T.Label}" />
+                                <PasswordBox x:Name="OverlayPwRepeat" Style="{StaticResource Field.Password}"
+                                             Margin="0,6,0,0" MaxLength="256" />
+                            </StackPanel>
+                            <TextBlock x:Name="OverlayPwError" Style="{StaticResource T.Body}" Margin="0,12,0,0"
+                                       Foreground="{StaticResource B.Pink}" FontWeight="SemiBold"
+                                       Visibility="Collapsed" />
+                        </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">
                             <Button x:Name="OverlayCancel" Style="{StaticResource Btn.Ghost}" Content="CANCEL"

@@ -1,17 +1,55 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 
 namespace Lotus.Setup
 {
     public static class Program
     {
-        private static readonly string LogPath = Path.Combine(Path.GetTempPath(), "LOTUS-Setup.log");
+        private static readonly List<string> LogLines = new List<string>();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetDefaultDllDirectories(uint flags);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool SetDllDirectoryW(string path);
+
+        /// <summary>
+        /// Setup runs with administrator rights, usually from a Downloads folder
+        /// that other programs can write to. This tells Windows to load system
+        /// libraries from the Windows folder only, so a library planted next to
+        /// setup is not picked up.
+        /// </summary>
+        private static void RestrictLibrarySearch()
+        {
+            const uint LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800;
+            try
+            {
+                SetDllDirectoryW("");
+                SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // A Windows version without this call. Nothing more can be done here.
+            }
+        }
 
         [STAThread]
         public static int Main(string[] args)
+        {
+            RestrictLibrarySearch();
+            return Run(args);
+        }
+
+        // Kept out of Main, so that nothing WPF needs is loaded before the library
+        // search has been restricted.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static int Run(string[] args)
         {
             bool quiet = false, uninstall = false;
             for (int i = 0; i + 1 < args.Length; i++)
@@ -64,12 +102,15 @@ namespace Lotus.Setup
                 uninstall = true;
             }
 
+            int code = 1;
             try
             {
-                return quiet ? RunQuiet(uninstall) : RunWindow(uninstall);
+                code = quiet ? RunQuiet(uninstall) : RunWindow(uninstall);
+                return code;
             }
             finally
             {
+                SaveLog(uninstall, code);
                 // A program cannot delete itself while it runs. When the uninstaller ran
                 // from the install folder, a helper removes the folder once this process is gone.
                 if (Installer.RemoveInstallFolderAtExit) RemoveInstallFolderLater();
@@ -78,7 +119,12 @@ namespace Lotus.Setup
 
         private static int RunQuiet(bool uninstall)
         {
-            var installer = new Installer(WriteLog);
+            // Without a window the password comes from the environment, where it does
+            // not show up in the list of running programs the way a command line does.
+            var installer = new Installer(WriteLog)
+            {
+                Password = Environment.GetEnvironmentVariable("LOTUS_PASSWORD") ?? ""
+            };
             try
             {
                 WriteLog(uninstall ? "=== quiet uninstall ===" : "=== quiet install ===");
@@ -114,9 +160,27 @@ namespace Lotus.Setup
 
         public static void WriteLog(string line)
         {
+            lock (LogLines) LogLines.Add(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + line);
+        }
+
+        /// <summary>
+        /// Writes what setup did into the install folder, which only administrators
+        /// can write to. A removal that went well leaves no log behind, because it
+        /// leaves nothing behind.
+        /// </summary>
+        private static void SaveLog(bool uninstall, int exitCode)
+        {
             try
             {
-                File.AppendAllText(LogPath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  " + line + Environment.NewLine);
+                if (uninstall && exitCode == 0) return;
+                if (!Directory.Exists(Installer.InstallDir)) return;
+                string text;
+                lock (LogLines)
+                {
+                    if (LogLines.Count == 0) return;
+                    text = string.Join(Environment.NewLine, LogLines) + Environment.NewLine;
+                }
+                File.AppendAllText(Path.Combine(Installer.InstallDir, Installer.SetupLog), text, new UTF8Encoding(false));
             }
             catch (Exception)
             {

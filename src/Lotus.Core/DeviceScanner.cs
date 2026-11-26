@@ -16,6 +16,12 @@ namespace Lotus.Core
             "rusb3hub", "viahub3", "etronhub3", "fl2000hub", "tihub3"
         };
 
+        // What a device declares about itself does not change while it stays
+        // plugged in, so it is read once per connection and remembered.
+        private static readonly object CacheGate = new object();
+        private static readonly Dictionary<string, List<string>> DescriptorCache =
+            new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>Returns every present USB device, including ones that are disabled.</summary>
         public static List<UsbDevice> Scan()
         {
@@ -25,20 +31,105 @@ namespace Lotus.Core
 
             foreach (string id in ids)
             {
+                UsbDevice device = DescribePresent(id);
+                if (device != null) result.Add(device);
+            }
+
+            ForgetAllExcept(ids);
+            result.Sort((a, b) => string.Compare(a.InstanceId, b.InstanceId, StringComparison.OrdinalIgnoreCase));
+            return result;
+        }
+
+        /// <summary>
+        /// Describes one connected device, or returns null when the ID is not a
+        /// physical USB device that is plugged in right now. Much cheaper than a
+        /// full scan, which is what makes it usable the instant a device appears.
+        /// </summary>
+        public static UsbDevice ScanOne(string instanceId)
+        {
+            return DescribePresent(instanceId);
+        }
+
+        private static UsbDevice DescribePresent(string id)
+        {
+            if (!UsbClassifier.ParseInstanceId(id, out string vid, out string pid, out string tail)) return null;
+            if (CfgMgr.CM_Locate_DevNodeW(out int node, id, CfgMgr.CM_LOCATE_DEVNODE_NORMAL) != CfgMgr.CR_SUCCESS)
+            {
+                return null;
+            }
+            if (!IsPhysicalDevice(node)) return null;
+            return Describe(node, id, vid, pid, tail, true);
+        }
+
+        /// <summary>
+        /// Lists USB devices Windows remembers that are not plugged in right now.
+        /// Only what Windows stored about them is available, so a composite device
+        /// in this list does not say what it does.
+        /// </summary>
+        public static List<UsbDevice> ScanAbsent()
+        {
+            var result = new List<UsbDevice>();
+            var present = new HashSet<string>(CfgMgr.GetDeviceIds("USB",
+                CfgMgr.CM_GETIDLIST_FILTER_ENUMERATOR | CfgMgr.CM_GETIDLIST_FILTER_PRESENT),
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (string id in CfgMgr.GetDeviceIds("USB", CfgMgr.CM_GETIDLIST_FILTER_ENUMERATOR))
+            {
+                if (present.Contains(id) || !UsbClassifier.IsWholeDeviceId(id)) continue;
                 if (!UsbClassifier.ParseInstanceId(id, out string vid, out string pid, out string tail)) continue;
-                if (CfgMgr.CM_Locate_DevNodeW(out int node, id, CfgMgr.CM_LOCATE_DEVNODE_NORMAL) !=
+                if (CfgMgr.CM_Locate_DevNodeW(out int node, id, CfgMgr.CM_LOCATE_DEVNODE_PHANTOM) !=
                     CfgMgr.CR_SUCCESS)
                 {
                     continue;
                 }
-                if (!IsPhysicalDevice(node)) continue;
-
-                UsbDevice device = Describe(node, id, vid, pid, tail);
-                if (device != null) result.Add(device);
+                UsbDevice device = Describe(node, id, vid, pid, tail, false);
+                if (device == null) continue;
+                device.Present = false;
+                device.Started = false;
+                device.Problem = CfgMgr.TryGetInt(node, CfgMgr.CM_DRP_CONFIGFLAGS, out int flags) &&
+                                 (flags & CfgMgr.CONFIGFLAG_DISABLED) != 0
+                    ? UsbDevice.ProblemDisabled
+                    : 0;
+                result.Add(device);
             }
-
-            result.Sort((a, b) => string.Compare(a.InstanceId, b.InstanceId, StringComparison.OrdinalIgnoreCase));
             return result;
+        }
+
+        /// <summary>
+        /// Drops what is remembered about one device. Called when Windows reports
+        /// that the device appeared or left, because the same ID can come back as a
+        /// different device.
+        /// </summary>
+        public static void Forget(string instanceId)
+        {
+            if (string.IsNullOrEmpty(instanceId)) return;
+            lock (CacheGate) DescriptorCache.Remove(instanceId);
+        }
+
+        private static void ForgetAllExcept(List<string> presentIds)
+        {
+            lock (CacheGate)
+            {
+                if (DescriptorCache.Count == 0) return;
+                var present = new HashSet<string>(presentIds, StringComparer.OrdinalIgnoreCase);
+                foreach (string id in new List<string>(DescriptorCache.Keys))
+                {
+                    if (!present.Contains(id)) DescriptorCache.Remove(id);
+                }
+            }
+        }
+
+        private static List<string> DescriptorIdsFor(int node, string id)
+        {
+            lock (CacheGate)
+            {
+                if (DescriptorCache.TryGetValue(id, out List<string> cached)) return cached;
+            }
+            UsbDescriptorInfo info = UsbDescriptors.Read(node);
+            List<string> ids = info?.ToCompatibleIds();
+            if (ids == null || ids.Count == 0) return null;
+            lock (CacheGate) DescriptorCache[id] = ids;
+            return ids;
         }
 
         /// <summary>
@@ -70,7 +161,7 @@ namespace Lotus.Core
             return false;
         }
 
-        private static UsbDevice Describe(int node, string id, string vid, string pid, string tail)
+        private static UsbDevice Describe(int node, string id, string vid, string pid, string tail, bool present)
         {
             var device = new UsbDevice
             {
@@ -92,7 +183,13 @@ namespace Lotus.Core
             device.HasSerial = unique && UsbClassifier.LooksLikeSerial(tail);
             device.Serial = device.HasSerial ? tail : "";
 
-            device.BuiltIn = CfgMgr.GetDevPropBool(node, CfgMgr.DEVPKEY_Device_InLocalMachineContainer) == true;
+            // "Built in" exempts a device from the USB device rule, so it takes two
+            // independent signs: Windows groups it with the computer itself, and the
+            // port it sits in is not one a person can plug things into.
+            bool removable = CfgMgr.TryGetInt(node, CfgMgr.CM_DRP_CAPABILITIES, out int capabilities) &&
+                             (capabilities & CfgMgr.CM_DEVCAP_REMOVABLE) != 0;
+            device.BuiltIn = !removable &&
+                             CfgMgr.GetDevPropBool(node, CfgMgr.DEVPKEY_Device_InLocalMachineContainer) == true;
             device.Location = CfgMgr.GetString(node, CfgMgr.CM_DRP_LOCATION_INFORMATION);
 
             string service = CfgMgr.GetString(node, CfgMgr.CM_DRP_SERVICE);
@@ -103,13 +200,17 @@ namespace Lotus.Core
 
             bool hub = IsHub(node, id);
             var descendants = new List<DeviceNodeInfo>();
-            if (!hub) CollectDescendants(node, descendants, 0);
+            if (!hub && present) CollectDescendants(node, descendants, 0);
 
             if (hub) ids.Add(@"USB\USB20_HUB");
-            UsbClassifier.Classify(device, className, service, ids, descendants);
+            List<string> descriptorIds = hub || !present ? null : DescriptorIdsFor(node, id);
+            UsbClassifier.Classify(device, className, service, ids, descendants, descriptorIds);
+            device.Described = descriptorIds != null;
 
-            device.Name = PickName(node, descendants);
-            device.Vendor = PickVendor(node, vid);
+            // The device chooses these strings, so they are cleaned before anything else sees them.
+            device.Name = TextSafety.Clean(PickName(node, descendants));
+            if (device.Name.Length == 0) device.Name = "Unknown USB device";
+            device.Vendor = TextSafety.Clean(PickVendor(node, vid), 48);
             return device;
         }
 

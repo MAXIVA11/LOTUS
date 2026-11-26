@@ -10,6 +10,8 @@ namespace Lotus.Core
         public bool Gone;
         /// <summary>Windows does not allow this device to be disabled. Keyboards are the usual case.</summary>
         public bool NotDisableable;
+        /// <summary>A program had the device open, so Windows refused to stop it for now.</summary>
+        public bool Vetoed;
         public string Message = "";
 
         public static DeviceOpResult Success()
@@ -65,6 +67,7 @@ namespace Lotus.Core
                 DeviceOpResult failed =
                     DeviceOpResult.Fail("Windows refused to disable the device: " + CfgMgr.Describe(cr) + ".");
                 failed.NotDisableable = cr == CfgMgr.CR_NOT_DISABLEABLE;
+                failed.Vetoed = cr == CfgMgr.CR_REMOVE_VETOED;
                 // A refused request must not leave the "disabled" mark behind.
                 ClearDisabledFlag(node);
                 return failed;
@@ -76,8 +79,10 @@ namespace Lotus.Core
                 bool disabled = (status & CfgMgr.DN_HAS_PROBLEM) != 0 && problem == CfgMgr.CM_PROB_DISABLED;
                 if (!disabled && (status & CfgMgr.DN_STARTED) != 0)
                 {
-                    return DeviceOpResult.Fail(
+                    DeviceOpResult running = DeviceOpResult.Fail(
                         "The device is still running. Windows will turn it off the next time it is connected.");
+                    running.Vetoed = true;
+                    return running;
                 }
             }
             return DeviceOpResult.Success();
@@ -172,7 +177,16 @@ namespace Lotus.Core
         {
             method = BlockMethod.Disabled;
             DeviceOpResult disabled = Disable(instanceId);
-            if (disabled.Ok || !disabled.NotDisableable) return disabled;
+            if (disabled.Ok) return disabled;
+            if (disabled.Vetoed)
+            {
+                // Something has the device open: Explorer reading a new drive, a
+                // virus scanner. Asking again later would leave the device usable in
+                // the meantime, so take it off the bus instead.
+                DeviceOpResult forced = ForceOff(instanceId);
+                return forced.Ok ? forced : disabled;
+            }
+            if (!disabled.NotDisableable) return disabled;
 
             method = BlockMethod.Removed;
             DeviceOpResult removed = Remove(instanceId);
@@ -180,6 +194,66 @@ namespace Lotus.Core
 
             if (Disable(instanceId).Ok) method = BlockMethod.Disabled;
             return DeviceOpResult.Success();
+        }
+
+        /// <summary>
+        /// Switches off a device that Windows will not stop because a program is
+        /// using it. The device is marked as disabled and its hub port is cycled,
+        /// which is the same as pulling the plug and putting it back: no program
+        /// gets a say, and Windows honours the mark when the device reappears.
+        /// </summary>
+        public static DeviceOpResult ForceOff(string instanceId)
+        {
+            int cr = CfgMgr.CM_Locate_DevNodeW(out int node, instanceId, CfgMgr.CM_LOCATE_DEVNODE_NORMAL);
+            if (cr != CfgMgr.CR_SUCCESS)
+            {
+                return DeviceOpResult.Fail("Could not find the device: " + CfgMgr.Describe(cr) + ".");
+            }
+
+            int flags = CfgMgr.TryGetInt(node, CfgMgr.CM_DRP_CONFIGFLAGS, out int current) ? current : 0;
+            byte[] marked = BitConverter.GetBytes(flags | CfgMgr.CONFIGFLAG_DISABLED);
+            cr = CfgMgr.CM_Set_DevNode_Registry_PropertyW(node, CfgMgr.CM_DRP_CONFIGFLAGS, marked, marked.Length, 0);
+            if (cr != CfgMgr.CR_SUCCESS)
+            {
+                return DeviceOpResult.Fail("Could not set the disabled flag: " + CfgMgr.Describe(cr) + ".");
+            }
+
+            if (!UsbDescriptors.CyclePort(node))
+            {
+                // Without the cycle the mark would only take effect at the next
+                // replug. Take it back, so that state and ledger stay in step.
+                ClearDisabledFlag(node);
+                return DeviceOpResult.Fail("The hub did not accept the request to reconnect the device.");
+            }
+
+            // The device drops off the bus and comes back within a second or so.
+            bool seenGone = false;
+            for (int attempt = 0; attempt < 60; attempt++)
+            {
+                System.Threading.Thread.Sleep(50);
+                if (CfgMgr.CM_Locate_DevNodeW(out int again, instanceId, CfgMgr.CM_LOCATE_DEVNODE_NORMAL) !=
+                    CfgMgr.CR_SUCCESS)
+                {
+                    seenGone = true;
+                    continue;
+                }
+                if (CfgMgr.CM_Get_DevNode_Status(out int status, out int problem, again, 0) != CfgMgr.CR_SUCCESS)
+                {
+                    continue;
+                }
+                if ((status & CfgMgr.DN_HAS_PROBLEM) != 0 && problem == CfgMgr.CM_PROB_DISABLED)
+                {
+                    return DeviceOpResult.Success();
+                }
+                if (seenGone && (status & CfgMgr.DN_STARTED) != 0)
+                {
+                    return DeviceOpResult.Fail("The device came back running after it was reconnected.");
+                }
+            }
+            // It has not come back. The mark is in place for when it does.
+            return seenGone
+                ? DeviceOpResult.Success()
+                : DeviceOpResult.Fail("The device did not leave the bus when its port was reset.");
         }
 
         /// <summary>
@@ -224,6 +298,37 @@ namespace Lotus.Core
         {
             if (CfgMgr.CM_Get_DevNode_Status(out int status, out int problem, node, 0) != CfgMgr.CR_SUCCESS) return 0;
             return (status & CfgMgr.DN_HAS_PROBLEM) != 0 ? problem : 0;
+        }
+
+        /// <summary>
+        /// Marks a device that is not connected as disabled. Windows honours the mark
+        /// when the device is plugged in, so it comes back already switched off.
+        /// Refuses a device that is connected: that one goes through Block.
+        /// </summary>
+        public static DeviceOpResult MarkAbsentDisabled(string instanceId)
+        {
+            if (CfgMgr.CM_Locate_DevNodeW(out int _, instanceId, CfgMgr.CM_LOCATE_DEVNODE_NORMAL) ==
+                CfgMgr.CR_SUCCESS)
+            {
+                return DeviceOpResult.Fail("The device is connected.");
+            }
+            int cr = CfgMgr.CM_Locate_DevNodeW(out int node, instanceId, CfgMgr.CM_LOCATE_DEVNODE_PHANTOM);
+            if (cr != CfgMgr.CR_SUCCESS)
+            {
+                var gone = DeviceOpResult.Fail("Could not find the device record: " + CfgMgr.Describe(cr) + ".");
+                gone.Gone = cr == CfgMgr.CR_NO_SUCH_DEVNODE || cr == CfgMgr.CR_INVALID_DEVICE_ID;
+                return gone;
+            }
+            int flags = CfgMgr.TryGetInt(node, CfgMgr.CM_DRP_CONFIGFLAGS, out int current) ? current : 0;
+            if ((flags & CfgMgr.CONFIGFLAG_DISABLED) != 0) return DeviceOpResult.Success();
+
+            byte[] marked = BitConverter.GetBytes(flags | CfgMgr.CONFIGFLAG_DISABLED);
+            cr = CfgMgr.CM_Set_DevNode_Registry_PropertyW(node, CfgMgr.CM_DRP_CONFIGFLAGS, marked, marked.Length, 0);
+            if (cr != CfgMgr.CR_SUCCESS)
+            {
+                return DeviceOpResult.Fail("Could not set the disabled flag: " + CfgMgr.Describe(cr) + ".");
+            }
+            return DeviceOpResult.Success();
         }
 
         /// <summary>

@@ -74,6 +74,13 @@
                 </Border>
                 <TextBlock x:Name="WelcomePath" Style="{StaticResource T.Label}" Margin="0,16,0,0"
                            TextWrapping="Wrap" />
+                <StackPanel x:Name="PasswordPanel" Margin="0,14,0,0" Visibility="Collapsed">
+                    <TextBlock Text="LOTUS PASSWORD" Style="{StaticResource T.Label}" />
+                    <PasswordBox x:Name="PasswordField" Style="{StaticResource Field.Password}" Margin="0,6,0,0"
+                                 MaxLength="256" Width="320" HorizontalAlignment="Left" />
+                    <TextBlock x:Name="PasswordError" Style="{StaticResource T.Body}" Margin="0,8,0,0"
+                               Foreground="{StaticResource B.Pink}" FontWeight="SemiBold" Visibility="Collapsed" />
+                </StackPanel>
             </StackPanel>
 
             <!-- progress and result -->

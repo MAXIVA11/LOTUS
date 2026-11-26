@@ -161,7 +161,11 @@ namespace Lotus.Probe
         private static int Watch(int milliseconds)
         {
             int count = 0;
-            using (var watcher = new DeviceWatcher(() => Interlocked.Increment(ref count)))
+            using (var watcher = new DeviceWatcher((action, id) =>
+                   {
+                       Interlocked.Increment(ref count);
+                       Console.WriteLine("  " + DateTime.Now.ToString("HH:mm:ss.fff") + "  action=" + action + "  " + id);
+                   }))
             {
                 bool started = watcher.Start();
                 Console.WriteLine("watch: started=" + started);

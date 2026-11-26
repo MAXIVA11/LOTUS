@@ -24,6 +24,24 @@ namespace Lotus.App.Backend
         public List<LotusEvent> Events = new List<LotusEvent>();
         public GuardState Guard;
         public bool ReadOnlyActive;
+        /// <summary>A LOTUS password is set, so every change asks for it.</summary>
+        public bool HasPassword;
+        /// <summary>The policy store was damaged and LOTUS blocks everything until it is reinstalled.</summary>
+        public bool Lockdown;
+    }
+
+    /// <summary>What came of an attempt to save.</summary>
+    public sealed class SaveResult
+    {
+        public bool Ok;
+        /// <summary>One of the GuardProtocol.Err codes, or "unavailable".</summary>
+        public string Code = "";
+        public string Message = "";
+
+        public static SaveResult From(GuardReply reply)
+        {
+            return new SaveResult { Ok = reply.Ok, Code = reply.Code, Message = reply.Message };
+        }
     }
 
     /// <summary>Where the app gets its data and where it saves the policy.</summary>
@@ -32,7 +50,12 @@ namespace Lotus.App.Backend
         bool IsDemo { get; }
         /// <summary>Reads the current state. Called on a background thread.</summary>
         AppSnapshot Read();
-        void SavePolicy(Policy policy);
+        /// <summary>
+        /// Asks LOTUS Guard to put a policy in force. The guard checks the password.
+        /// newPassword sets the password in the same step, the first time LOTUS is armed.
+        /// </summary>
+        SaveResult SavePolicy(Policy policy, string password, string newPassword);
+        SaveResult ChangePassword(string password, string newPassword);
         /// <summary>Starts the guard service. Returns an error message, or null when it worked.</summary>
         string StartGuard();
         string LogFolder { get; }
@@ -44,6 +67,7 @@ namespace Lotus.App.Backend
         private readonly ActivityLog log = new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile);
         private readonly WindowsDeviceBackend devices = new WindowsDeviceBackend();
         private readonly RegistryReadOnlyPolicy readOnly = new RegistryReadOnlyPolicy();
+        private readonly GuardClient guard = new GuardClient();
 
         public bool IsDemo => false;
         public string LogFolder => LotusPaths.DataDir;
@@ -51,14 +75,25 @@ namespace Lotus.App.Backend
         public AppSnapshot Read()
         {
             var snapshot = new AppSnapshot();
-            PolicyLoadResult loaded = PolicyStore.Load(LotusPaths.PolicyFile);
-            snapshot.Policy = loaded.Policy;
-            snapshot.PolicyError = loaded.Error;
+            // The app only shows the policy. It cannot change the store: every
+            // change goes to LOTUS Guard, which checks the password and writes it.
+            StoreContent stored = SecureStore.ReadUnverified(LotusPaths.StoreFile);
+            if (stored != null)
+            {
+                snapshot.Policy = stored.Policy;
+                snapshot.HasPassword = stored.Password != null;
+            }
+            else if (File.Exists(LotusPaths.StoreFile))
+            {
+                snapshot.PolicyError = "The policy store could not be read.";
+            }
+            snapshot.Lockdown = PublicStatus.Read().Lockdown;
+            if (snapshot.Lockdown) snapshot.Policy = GuardWorker.LockdownPolicy();
 
             Ledger ledger = Ledger.Load(LotusPaths.LedgerFile, out string _);
             foreach (UsbDevice device in devices.Scan())
             {
-                snapshot.Devices.Add(DeviceView.Resolve(loaded.Policy, device, ledger, TimeSpan.MaxValue));
+                snapshot.Devices.Add(DeviceView.Resolve(snapshot.Policy, device, ledger, TimeSpan.MaxValue));
             }
 
             snapshot.Events = log.ReadRecent(400);
@@ -92,10 +127,28 @@ namespace Lotus.App.Backend
             }
         }
 
-        public void SavePolicy(Policy policy)
+        public SaveResult SavePolicy(Policy policy, string password, string newPassword)
         {
-            Directory.CreateDirectory(LotusPaths.DataDir);
-            PolicyStore.Save(LotusPaths.PolicyFile, policy);
+            try
+            {
+                return SaveResult.From(guard.Apply(policy.ToJson(), password, newPassword));
+            }
+            catch (GuardUnavailableException ex)
+            {
+                return new SaveResult { Code = "unavailable", Message = ex.Message };
+            }
+        }
+
+        public SaveResult ChangePassword(string password, string newPassword)
+        {
+            try
+            {
+                return SaveResult.From(guard.SetPassword(password, newPassword));
+            }
+            catch (GuardUnavailableException ex)
+            {
+                return new SaveResult { Code = "unavailable", Message = ex.Message };
+            }
         }
 
         public string StartGuard()
@@ -136,6 +189,7 @@ namespace Lotus.App.Backend
         private readonly List<LotusEvent> events = new List<LotusEvent>();
         private readonly Enforcer enforcer;
         private Policy policy = new Policy();
+        private PasswordRecord password;
 
         public const string StickId = @"USB\VID_0781&PID_5567\4C530001230505116353";
         public const string KeyboardId = @"USB\VID_1A2C&PID_2D23\5&CC3F949&0&6";
@@ -228,7 +282,8 @@ namespace Lotus.App.Backend
                     Policy = policy.Clone(),
                     Devices = pass.Devices,
                     Guard = GuardState.Simulated,
-                    ReadOnlyActive = readOnly.Applied
+                    ReadOnlyActive = readOnly.Applied,
+                    HasPassword = password != null
                 };
                 snapshot.Events = new List<LotusEvent>(events);
                 snapshot.Events.Reverse();
@@ -236,10 +291,60 @@ namespace Lotus.App.Backend
             }
         }
 
-        public void SavePolicy(Policy newPolicy)
+        /// <summary>The demo guard follows the same password rules as the real one.</summary>
+        private SaveResult CheckPassword(string entered)
+        {
+            if (password == null) return null;
+            if (string.IsNullOrEmpty(entered))
+            {
+                return new SaveResult { Code = GuardProtocol.ErrPasswordNeeded, Message = "Enter the LOTUS password." };
+            }
+            return password.Verify(entered)
+                ? null
+                : new SaveResult { Code = GuardProtocol.ErrWrongPassword, Message = "That is not the LOTUS password." };
+        }
+
+        public SaveResult ChangePassword(string current, string newPassword)
         {
             lock (gate)
             {
+                SaveResult refusal = CheckPassword(current);
+                if (refusal != null) return refusal;
+                string problem = PasswordRecord.Problem(newPassword);
+                if (problem != null) return new SaveResult { Code = GuardProtocol.ErrWeakPassword, Message = problem };
+                password = PasswordRecord.Create(newPassword, 1000);
+                events.Add(new LotusEvent { Type = EventTypes.Security, Message = "The LOTUS password was changed." });
+                return new SaveResult { Ok = true };
+            }
+        }
+
+        public SaveResult SavePolicy(Policy newPolicy, string current, string newPassword)
+        {
+            lock (gate)
+            {
+                SaveResult refusal = CheckPassword(current);
+                if (refusal != null) return refusal;
+                if (password == null)
+                {
+                    if (newPolicy.Armed && string.IsNullOrEmpty(newPassword))
+                    {
+                        return new SaveResult
+                        {
+                            Code = GuardProtocol.ErrNewPasswordNeeded,
+                            Message = "Choose a LOTUS password before arming. It is needed for every later change."
+                        };
+                    }
+                    if (!string.IsNullOrEmpty(newPassword))
+                    {
+                        string problem = PasswordRecord.Problem(newPassword);
+                        if (problem != null)
+                        {
+                            return new SaveResult { Code = GuardProtocol.ErrWeakPassword, Message = problem };
+                        }
+                        password = PasswordRecord.Create(newPassword, 1000);
+                        events.Add(new LotusEvent { Type = EventTypes.Security, Message = "A LOTUS password was set." });
+                    }
+                }
                 bool changed = !policy.SettingsEqual(newPolicy) || policy.Trusted.Count != newPolicy.Trusted.Count;
                 policy = newPolicy.Clone();
                 if (changed)
@@ -247,9 +352,10 @@ namespace Lotus.App.Backend
                     events.Add(new LotusEvent
                     {
                         Type = EventTypes.PolicyChanged,
-                        Message = "Policy loaded: " + GuardWorker.Summarize(policy)
+                        Message = "Policy changed: " + GuardWorker.Summarize(policy)
                     });
                 }
+                return new SaveResult { Ok = true };
             }
         }
 

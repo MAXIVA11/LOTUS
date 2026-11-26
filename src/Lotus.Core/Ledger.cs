@@ -31,11 +31,19 @@ namespace Lotus.Core
         /// reaches it. It is switched back on right away.
         /// </summary>
         public bool Restart;
+        /// <summary>
+        /// The device was marked as blocked while it was unplugged, so that it is
+        /// already off when it comes back. Cleared once it has been seen connected.
+        /// </summary>
+        public bool Premarked;
+        /// <summary>False when the device had not said what it does at the moment it was recorded.</summary>
+        public bool KindsKnown = true;
 
         public static LedgerEntry From(UsbDevice device, Reason reason, DateTime nowUtc)
         {
             return new LedgerEntry
             {
+                KindsKnown = device.FunctionsKnown,
                 InstanceId = Policy.NormalizeId(device.InstanceId),
                 Name = device.Name,
                 Vendor = device.Vendor,
@@ -68,7 +76,7 @@ namespace Lotus.Core
                 IsHub = IsHub,
                 Functions = new List<string>(Functions),
                 Kinds = Kinds,
-                FunctionsKnown = true,
+                FunctionsKnown = KindsKnown,
                 Present = false,
                 Started = false,
                 Problem = UsbDevice.ProblemDisabled
@@ -83,10 +91,21 @@ namespace Lotus.Core
         {
             if (!string.IsNullOrEmpty(Name)) device.Name = Name;
             if (!string.IsNullOrEmpty(Vendor) && string.IsNullOrEmpty(device.Vendor)) device.Vendor = Vendor;
+            if (device.Described)
+            {
+                // The device's own descriptors were read just now. They are newer and
+                // more trustworthy than what was written down when it was blocked.
+                foreach (string function in Functions)
+                {
+                    if (!device.Functions.Contains(function)) device.Functions.Add(function);
+                }
+                device.Kinds |= KindsKnown ? Kinds : DeviceKinds.None;
+                return;
+            }
             device.Functions = new List<string>(Functions);
             device.Kinds = Kinds;
             device.IsHub = IsHub;
-            device.FunctionsKnown = true;
+            device.FunctionsKnown = KindsKnown;
         }
     }
 
@@ -148,7 +167,9 @@ namespace Lotus.Core
                     ["reason"] = e.Reason.ToString(),
                     ["method"] = e.Method.ToString(),
                     ["since"] = Json.FormatTime(e.SinceUtc),
-                    ["restart"] = e.Restart
+                    ["restart"] = e.Restart,
+                    ["premarked"] = e.Premarked,
+                    ["kindsKnown"] = e.KindsKnown
                 });
             }
             return Json.Write(new Dictionary<string, object>
@@ -174,8 +195,8 @@ namespace Lotus.Core
                 var entry = new LedgerEntry
                 {
                     InstanceId = id,
-                    Name = Json.GetString(obj, "name", ""),
-                    Vendor = Json.GetString(obj, "vendor", ""),
+                    Name = TextSafety.Clean(Json.GetString(obj, "name", "")),
+                    Vendor = TextSafety.Clean(Json.GetString(obj, "vendor", ""), 48),
                     Vid = Json.GetString(obj, "vid", ""),
                     Pid = Json.GetString(obj, "pid", ""),
                     Serial = Json.GetString(obj, "serial", ""),
@@ -184,7 +205,9 @@ namespace Lotus.Core
                     IsHub = Json.GetBool(obj, "hub", false),
                     Kinds = (DeviceKinds)Json.GetInt(obj, "kinds", (int)DeviceKinds.Other),
                     SinceUtc = Json.ParseTime(Json.GetString(obj, "since", null), DateTime.UtcNow),
-                    Restart = Json.GetBool(obj, "restart", false)
+                    Restart = Json.GetBool(obj, "restart", false),
+                    Premarked = Json.GetBool(obj, "premarked", false),
+                    KindsKnown = Json.GetBool(obj, "kindsKnown", true)
                 };
                 if (!Enum.TryParse(Json.GetString(obj, "reason", ""), out entry.Reason))
                 {

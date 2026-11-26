@@ -67,9 +67,11 @@ namespace Lotus.Core.Native
         public const int CM_DRP_FRIENDLYNAME = 0x0D;
         public const int CM_DRP_LOCATION_INFORMATION = 0x0E;
         public const int CM_DRP_CAPABILITIES = 0x10;
+        public const int CM_DRP_ADDRESS = 0x1D;
 
         public const int CONFIGFLAG_DISABLED = 0x1;
         public const int CM_DEVCAP_UNIQUEID = 0x10;
+        public const int CM_DEVCAP_REMOVABLE = 0x4;
 
         // Status flags
         public const int DN_STARTED = 0x8;

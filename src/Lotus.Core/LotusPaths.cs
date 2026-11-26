@@ -35,8 +35,20 @@ namespace Lotus.Core
             dataDirOverride = string.IsNullOrWhiteSpace(directory) ? null : Path.GetFullPath(directory);
         }
 
-        public static string PolicyFile => Path.Combine(DataDir, "policy.json");
-        public static string LedgerFile => Path.Combine(DataDir, "ledger.json");
+        /// <summary>
+        /// Folder inside the data folder that holds the sealed policy store, its key
+        /// and the block ledger. Only the service can write here, and only
+        /// administrators can read.
+        /// </summary>
+        public static string SecureDir => Path.Combine(DataDir, "secure");
+
+        public static string StoreFile => Path.Combine(SecureDir, "policy.dat");
+        public static string LedgerFile => Path.Combine(SecureDir, "ledger.json");
+        /// <summary>A few facts anyone may read, such as whether LOTUS is armed.</summary>
+        public static string StatusFile => Path.Combine(DataDir, "status.json");
+        /// <summary>Where LOTUS 1.0 kept its policy. Read once, when a newer version takes over.</summary>
+        public static string LegacyPolicyFile => Path.Combine(DataDir, "policy.json");
+        public static string LegacyLedgerFile => Path.Combine(DataDir, "ledger.json");
         public static string EventsFile => Path.Combine(DataDir, "events.jsonl");
         public static string OldEventsFile => Path.Combine(DataDir, "events.old.jsonl");
 

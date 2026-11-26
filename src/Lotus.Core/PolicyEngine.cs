@@ -38,6 +38,11 @@ namespace Lotus.Core
         public Reason Reason;
         /// <summary>The trust entry that matched, when Reason is Trusted.</summary>
         public TrustEntry Trust;
+        /// <summary>
+        /// A trust entry that names this device but no longer covers it, because the
+        /// device now has a function it did not have when it was trusted.
+        /// </summary>
+        public TrustEntry Outgrown;
 
         public bool IsBlock => Verdict == Verdict.Block;
 
@@ -81,16 +86,41 @@ namespace Lotus.Core
             // Never touch the disk Windows is running from.
             if (device.IsSystemDisk) return Decision.Allow(Reason.SystemDisk);
 
-            TrustEntry trust = policy.FindTrust(device);
-            if (trust != null) return Decision.Allow(Reason.Trusted, trust);
-
             bool storageBlocked = policy.Storage == StorageMode.Block;
             bool pnpBlocked = policy.Pnp == PnpMode.Block;
+
+            TrustEntry trust = policy.FindTrust(device, out TrustEntry outgrown);
+            if (trust != null)
+            {
+                // An entry that records what the device did can only be checked once the
+                // device has said what it does now. Until then, wait instead of assuming.
+                if (trust.Functions.Count > 0 && !device.FunctionsKnown && seenFor < IdentifyGrace &&
+                    (storageBlocked || pnpBlocked))
+                {
+                    return Decision.Pending();
+                }
+                return Decision.Allow(Reason.Trusted, trust);
+            }
+
             if (!storageBlocked && !pnpBlocked) return Decision.Allow(Reason.PolicyAllows);
 
+            Decision decision = Judge(policy, device, seenFor, storageBlocked, pnpBlocked);
+            decision.Outgrown = outgrown;
+            return decision;
+        }
+
+        private static Decision Judge(Policy policy, UsbDevice device, TimeSpan seenFor, bool storageBlocked,
+            bool pnpBlocked)
+        {
             DeviceKinds kinds = device.Kinds;
             if (!device.FunctionsKnown)
             {
+                // With both rules on and no exception for keyboards, every answer the
+                // device could give ends in a block. There is nothing to wait for.
+                if (storageBlocked && pnpBlocked && !policy.AllowInput && !device.BuiltIn)
+                {
+                    return Decision.Block(Reason.PnpBlocked);
+                }
                 if (seenFor < IdentifyGrace) return Decision.Pending();
                 // It never told us what it is. Treat it as an unknown device.
                 kinds = DeviceKinds.Other;
@@ -112,6 +142,15 @@ namespace Lotus.Core
             }
 
             return Decision.Allow(Reason.PolicyAllows);
+        }
+
+        /// <summary>The rule behind a block, worded to follow "because", for a full decision.</summary>
+        public static string BlockReason(Decision decision)
+        {
+            string rule = BlockReason(decision.Reason);
+            return decision.Outgrown == null
+                ? rule
+                : rule + ". It is on the trusted list, but it now has a function it did not have when it was trusted";
         }
 
         /// <summary>The rule behind a block, worded to follow "because".</summary>
@@ -141,6 +180,11 @@ namespace Lotus.Core
                     return "Allowed because the policy keeps keyboards and mice working.";
                 case Reason.StorageBlocked:
                 case Reason.PnpBlocked:
+                    if (decision.Outgrown != null)
+                    {
+                        return "Blocked. It is on the trusted list, but it now has a function it did not have " +
+                               "when it was trusted. Remove the trust and add it again if you expect that.";
+                    }
                     return "Blocked because " + BlockReason(decision.Reason) + ".";
                 case Reason.Identifying:
                     return "Just plugged in. Waiting for the device to say what it is.";

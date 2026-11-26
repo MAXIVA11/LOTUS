@@ -34,8 +34,13 @@ namespace Lotus.Core
         /// <param name="rootService">Driver service of the device itself, for example usbccgp.</param>
         /// <param name="rootIds">Hardware and compatible IDs of the device itself.</param>
         /// <param name="descendants">Every node below the device, excluding devices behind a hub.</param>
+        /// <param name="descriptorIds">
+        /// Class codes read from the device's own descriptors, in compatible ID form, or
+        /// null when they could not be read. With these the functions are known at once.
+        /// </param>
         public static void Classify(UsbDevice device, string rootClass, string rootService,
-            IEnumerable<string> rootIds, IEnumerable<DeviceNodeInfo> descendants)
+            IEnumerable<string> rootIds, IEnumerable<DeviceNodeInfo> descendants,
+            IEnumerable<string> descriptorIds = null)
         {
             var functions = new List<string>();
             DeviceKinds kinds = DeviceKinds.None;
@@ -56,6 +61,20 @@ namespace Lotus.Core
 
             AddFromIds(rootUpper, functions, ref kinds);
             kinds |= KindFromSetupClass(rootClass);
+
+            // What the device declares on the wire counts as well as what Windows made
+            // of it. A function shows up here before its driver has loaded.
+            bool described = false;
+            if (descriptorIds != null)
+            {
+                var descriptorUpper = new List<string>();
+                foreach (string id in descriptorIds)
+                {
+                    if (!string.IsNullOrEmpty(id)) descriptorUpper.Add(id.ToUpperInvariant());
+                }
+                described = descriptorUpper.Count > 0;
+                AddFromIds(descriptorUpper, functions, ref kinds);
+            }
 
             int usbChildren = 0;
             foreach (DeviceNodeInfo node in descendants ?? new DeviceNodeInfo[0])
@@ -95,7 +114,7 @@ namespace Lotus.Core
             device.IsComposite = composite;
             device.Functions = functions;
             // A composite device says nothing about itself until its interfaces show up.
-            device.FunctionsKnown = !(composite && usbChildren == 0);
+            device.FunctionsKnown = described || !(composite && usbChildren == 0);
             if (device.FunctionsKnown && kinds == DeviceKinds.None) kinds = DeviceKinds.Other;
             device.Kinds = kinds;
         }
@@ -233,6 +252,18 @@ namespace Lotus.Core
             int slash = upper.LastIndexOf('\\');
             tail = slash >= 0 && slash < upper.Length - 1 ? upper.Substring(slash + 1) : "";
             return true;
+        }
+
+        /// <summary>
+        /// True for the ID of a whole device (USB\VID_xxxx&amp;PID_xxxx\tail) and false
+        /// for the ID of one interface of a composite device, which carries &amp;MI_nn.
+        /// </summary>
+        public static bool IsWholeDeviceId(string instanceId)
+        {
+            string upper = (instanceId ?? "").ToUpperInvariant();
+            string[] parts = upper.Split('\\');
+            return parts.Length == 3 && parts[0] == "USB" && parts[1].Length == 17 &&
+                   VidPid.IsMatch(upper) && parts[2].Length > 0;
         }
 
         /// <summary>
