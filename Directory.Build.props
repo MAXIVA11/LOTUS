@@ -1,0 +1,23 @@
+<Project>
+  <PropertyGroup>
+    <!-- .NET Framework 4.6.2 or newer is part of every Windows 10 (1607+) and Windows 11
+         installation, so LOTUS needs no runtime download. -->
+    <TargetFramework>net462</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <Deterministic>true</Deterministic>
+    <Prefer32Bit>false</Prefer32Bit>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Product>LOTUS</Product>
+    <Company>LOTUS project</Company>
+    <Copyright>MIT License</Copyright>
+    <Authors>MAXIVA11</Authors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+</Project>
