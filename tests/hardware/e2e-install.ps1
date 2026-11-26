@@ -3,7 +3,8 @@
 # It installs LOTUS with the real setup, arms a real policy, checks that the
 # service blocks one chosen USB device and leaves the others alone, releases it
 # again, checks read-only mode and a service restart, and then uninstalls and
-# checks that nothing is left behind.
+# checks that nothing is left behind. After that it installs, updates and
+# removes LOTUS once more by pressing the buttons of the setup window.
 #
 # -Target is the instance ID of a USB device that may be switched off for a few
 # seconds. Every other connected device is put on the trusted list first.
@@ -70,6 +71,106 @@ function Get-Events {
     return Get-Content $eventsFile | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json }
 }
 
+# ---------- helpers that drive the setup window through UI Automation ----------
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+function Get-SetupWindow($process) {
+    # Windows PowerShell only reports the exit code later if the handle was opened early.
+    $null = $process.Handle
+    $shown = Wait-Until { $process.Refresh(); $process.HasExited -or $process.MainWindowHandle -ne 0 } 20
+    if (-not $shown -or $process.HasExited) { return $null }
+    return [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
+}
+function Find-Part($window, [string]$id) {
+    $byId = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty, $id)
+    return $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $byId)
+}
+function Get-PartText($window, [string]$id) {
+    $part = Find-Part $window $id
+    if ($null -eq $part) { return '' }
+    return [string]$part.Current.Name
+}
+function Wait-Button($window, [string]$id, [string]$label, [int]$seconds = 60) {
+    return Wait-Until {
+        $b = Find-Part $window $id
+        $null -ne $b -and $b.Current.Name -eq $label -and $b.Current.IsEnabled
+    } $seconds
+}
+function Push-Button($window, [string]$id) {
+    $button = Find-Part $window $id
+    $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+}
+function Wait-Exit($process, [int]$seconds = 15) {
+    if (-not $process.WaitForExit($seconds * 1000)) { return $null }
+    return $process.ExitCode
+}
+
+function Test-SetupWindow {
+    # --- install by pressing the buttons ---
+    $p = Start-Process -FilePath $Setup -PassThru
+    $w = Get-SetupWindow $p
+    Check 'setup window opens' ($null -ne $w)
+    if ($null -eq $w) { return }
+    Check 'welcome page offers INSTALL' (Wait-Button $w 'PrimaryButton' 'INSTALL' 10) "button=$(Get-PartText $w 'PrimaryButton')"
+    $note = Get-PartText $w 'WelcomeNote'
+    Check 'welcome page says nothing is blocked after installation' ($note -like 'Nothing is blocked after installation*') "note=$note"
+    Check 'welcome page names the install folder' ((Get-PartText $w 'WelcomePath') -eq "Installs to $installDir")
+    Push-Button $w 'PrimaryButton'
+    $done = Wait-Button $w 'PrimaryButton' 'OPEN LOTUS' 90
+    $summary = Get-PartText $w 'WorkSummary'
+    Say "   summary: $summary"
+    Check 'install finishes and offers OPEN LOTUS' $done "button=$(Get-PartText $w 'PrimaryButton')"
+    Check 'install reports no warnings' ($summary -eq 'LOTUS is installed and disarmed. Open it to choose your policy.') "summary=$summary"
+    Check 'service runs after the window install' ((Get-Service LotusGuard -ErrorAction SilentlyContinue).Status -eq 'Running')
+    Check 'policy is disarmed after the window install' ((Get-Scan).policy -like 'disarmed*')
+    Check 'no device is off after the window install' (@((Get-Scan).devices | Where-Object { $_.problem -ne 0 }).Count -eq 0)
+    Push-Button $w 'SecondaryButton'
+    $code = Wait-Exit $p
+    Check 'CLOSE ends setup with exit code 0' ($code -eq 0) "exit=$code"
+
+    # --- run setup again: it must update and keep the policy ---
+    $kept = @([ordered]@{ kind = 'device'; id = $Target; name = 'kept by the update'; added = (Get-Date).ToUniversalTime().ToString('s') + 'Z' })
+    Write-Policy $false 'block' 'block' $true $kept
+    $p = Start-Process -FilePath $Setup -PassThru
+    $w = Get-SetupWindow $p
+    Check 'setup window opens again' ($null -ne $w)
+    if ($null -eq $w) { return }
+    Check 'second run offers UPDATE' (Wait-Button $w 'PrimaryButton' 'UPDATE' 10) "button=$(Get-PartText $w 'PrimaryButton')"
+    Push-Button $w 'PrimaryButton'
+    Check 'update finishes' (Wait-Button $w 'PrimaryButton' 'OPEN LOTUS' 90) "summary=$(Get-PartText $w 'WorkSummary')"
+    $after = Get-Content $policyFile -Raw | ConvertFrom-Json
+    Check 'update keeps the policy' ($after.storage -eq 'block' -and $after.pnp -eq 'block' -and $after.armed -eq $false) "storage=$($after.storage) pnp=$($after.pnp) armed=$($after.armed)"
+    Check 'update keeps the trusted list' (@($after.trusted | Where-Object { $_.id -eq $Target }).Count -eq 1)
+    Check 'service runs after the update' ((Get-Service LotusGuard -ErrorAction SilentlyContinue).Status -eq 'Running')
+    Get-Process LOTUS -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Stop-Process -Force -ErrorAction SilentlyContinue
+    Push-Button $w 'PrimaryButton'
+    $code = Wait-Exit $p
+    Check 'OPEN LOTUS ends setup with exit code 0' ($code -eq 0) "exit=$code"
+    $opened = Wait-Until { @(Get-Process LOTUS -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }).Count -ge 1 } 15
+    Check 'OPEN LOTUS opens the app' $opened
+    Get-Process LOTUS -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { $_.CloseMainWindow() | Out-Null }
+
+    # --- remove it by double-clicking the uninstaller ---
+    $p = Start-Process -FilePath (Join-Path $installDir 'Uninstall.exe') -PassThru
+    $w = Get-SetupWindow $p
+    Check 'uninstaller window opens' ($null -ne $w)
+    if ($null -eq $w) { return }
+    Check 'uninstaller offers REMOVE' (Wait-Button $w 'PrimaryButton' 'REMOVE' 10) "button=$(Get-PartText $w 'PrimaryButton')"
+    Push-Button $w 'PrimaryButton'
+    $done = Wait-Button $w 'PrimaryButton' 'CLOSE' 90
+    $summary = Get-PartText $w 'WorkSummary'
+    Say "   summary: $summary"
+    Check 'removal finishes' $done "button=$(Get-PartText $w 'PrimaryButton')"
+    Check 'removal reports no warnings' ($summary -eq 'LOTUS is removed. Every USB device works on this PC again.') "summary=$summary"
+    Push-Button $w 'PrimaryButton'
+    $code = Wait-Exit $p
+    Check 'CLOSE ends the uninstaller with exit code 0' ($code -eq 0) "exit=$code"
+    Check 'service is gone after the window removal' ($null -eq (Get-Service LotusGuard -ErrorAction SilentlyContinue))
+    Check 'program folder is gone after the window removal' (Wait-Until { -not (Test-Path $installDir) } 20)
+    Check 'policy folder is gone after the window removal' (-not (Test-Path $dataDir))
+    Check 'no LOTUS process is left after the window removal' (@(Get-Process LOTUS, LotusGuard -ErrorAction SilentlyContinue).Count -eq 0)
+}
+
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
 Say "elevated=$admin target=$Target"
@@ -77,6 +178,8 @@ if (-not $admin) { Say 'RESULT: not elevated, nothing was tested'; exit 1 }
 if (-not (Test-Path $Setup)) { Say "RESULT: setup not found at $Setup"; exit 1 }
 
 $Target = $Target.ToUpperInvariant()
+Say "setup=$Setup"
+Say "setup sha256=$((Get-FileHash $Setup -Algorithm SHA256).Hash)"
 
 # ---------- 0. leftovers from an earlier, interrupted run ----------
 # An early version of the uninstaller asked Windows to delete its last file at the
@@ -125,6 +228,18 @@ try {
     foreach ($f in 'LOTUS.exe', 'LotusGuard.exe', 'Lotus.Core.dll', 'Uninstall.exe', 'LICENSE.txt', 'LOTUS Notifier.lnk') {
         Check "installed file $f" (Test-Path (Join-Path $installDir $f))
     }
+    # The installed programs must be the ones the build just produced.
+    $built = @{
+        'LOTUS.exe'      = Join-Path $PSScriptRoot '..\..\src\Lotus.App\bin\Release\LOTUS.exe'
+        'Lotus.Core.dll' = Join-Path $PSScriptRoot '..\..\src\Lotus.App\bin\Release\Lotus.Core.dll'
+        'LotusGuard.exe' = Join-Path $PSScriptRoot '..\..\src\Lotus.Guard\bin\Release\LotusGuard.exe'
+    }
+    foreach ($f in $built.Keys) {
+        if (-not (Test-Path $built[$f])) { Say "   no build output to compare $f with"; continue }
+        $same = (Get-FileHash (Join-Path $installDir $f) -Algorithm SHA256).Hash -eq (Get-FileHash $built[$f] -Algorithm SHA256).Hash
+        Check "installed $f is the freshly built one" $same
+    }
+    Check 'uninstaller is a copy of setup' ((Get-FileHash (Join-Path $installDir 'Uninstall.exe') -Algorithm SHA256).Hash -eq (Get-FileHash $Setup -Algorithm SHA256).Hash)
     $svc = Get-CimInstance Win32_Service -Filter "Name='LotusGuard'"
     Check 'service exists' ($null -ne $svc)
     Check 'service is running' ($svc.State -eq 'Running') "state=$($svc.State)"
@@ -296,6 +411,29 @@ finally {
         Check 'target works after uninstall' ($pnp.Status -eq 'OK') "status=$($pnp.Status)"
         $off = @(Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'USB\VID_*' -and $_.Status -ne 'OK' })
         Check 'no USB device is left switched off' ($off.Count -eq 0) (($off | ForEach-Object { $_.InstanceId }) -join ', ')
+
+        # ---------- 11. the setup window, the way a double-click runs it ----------
+        Say ''
+        Say '=== 11. setup window ==='
+        try { Test-SetupWindow }
+        catch {
+            $script:failed++
+            Say "EXCEPTION: $($_.Exception.Message)"
+            Say $_.ScriptStackTrace
+        }
+        finally {
+            # Whatever happened above, do not leave LOTUS on the PC.
+            Get-Process LOTUS-Setup, Uninstall -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            $uninstaller = Join-Path $installDir 'Uninstall.exe'
+            if (Get-Service LotusGuard -ErrorAction SilentlyContinue) {
+                if (Test-Path $uninstaller) {
+                    Start-Process -FilePath $uninstaller -ArgumentList '/uninstall', '/quiet' -Wait
+                    Say '   cleanup: removed LOTUS with the quiet uninstaller'
+                }
+                else { Say '   cleanup: the service is still there and the uninstaller is missing' }
+            }
+        }
+        Check 'nothing is installed after the setup window test' (Wait-Until { -not (Test-Path $installDir) -and -not (Get-Service LotusGuard -ErrorAction SilentlyContinue) -and -not (Test-Path $dataDir) } 20)
     }
     Say ''
     Say "RESULT: passed=$($script:passed) failed=$($script:failed)"
