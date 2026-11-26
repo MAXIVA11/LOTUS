@@ -26,15 +26,25 @@ namespace Lotus.App
             InitializeComponent();
             this.onClick = onClick;
 
-            string name = string.IsNullOrWhiteSpace(e.DeviceName) ? "A USB device" : e.DeviceName;
-            DeviceName.Text = name;
-            // The log line reads "<name> was blocked because <rule>." The pop-up already
-            // shows the name and the word BLOCKED, so only the rule is left to say.
-            string reason = e.Message ?? "";
-            int because = reason.IndexOf(" because ", StringComparison.Ordinal);
-            if (because >= 0) reason = reason.Substring(because + " because ".Length);
-            if (reason.Length > 0) reason = char.ToUpperInvariant(reason[0]) + reason.Substring(1);
-            ReasonText.Text = (reason + " Click to open LOTUS.").Trim();
+            if (e.Type == EventTypes.Tamper)
+            {
+                // Someone interfered with LOTUS itself. Say what happened in full.
+                Headline.Text = "TAMPERING";
+                DeviceName.Text = "Someone tried to change LOTUS";
+                ReasonText.Text = ((e.Message ?? "") + " Click to open LOTUS.").Trim();
+            }
+            else
+            {
+                string name = string.IsNullOrWhiteSpace(e.DeviceName) ? "A USB device" : e.DeviceName;
+                DeviceName.Text = name;
+                // The log line reads "<name> was blocked because <rule>." The pop-up already
+                // shows the name and the word BLOCKED, so only the rule is left to say.
+                string reason = e.Message ?? "";
+                int because = reason.IndexOf(" because ", StringComparison.Ordinal);
+                if (because >= 0) reason = reason.Substring(because + " because ".Length);
+                if (reason.Length > 0) reason = char.ToUpperInvariant(reason[0]) + reason.Substring(1);
+                ReasonText.Text = (reason + " Click to open LOTUS.").Trim();
+            }
 
             timer.Tick += (s, a) => Close();
             // It stays for as long as the pointer rests on it, and the clock starts
