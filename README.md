@@ -214,7 +214,7 @@ The result is `dist\LOTUS-Setup.exe`. The script builds the app and the service,
 
 `dotnet test tests\Lotus.Tests` runs the unit tests. They cover the policy engine and run the enforcement loop against a simulated USB bus that behaves the way Windows was observed to behave.
 
-The scripts in `tests\hardware` need an administrator prompt and real devices. `probe-block.ps1` blocks and unblocks single devices. `e2e-install.ps1` installs LOTUS with the real setup, arms a policy, checks that one chosen device is blocked and released, restarts the service, switches read-only mode on and off, and uninstalls again. Read the comments at the top of each script before running it.
+The scripts in `tests\hardware` need an administrator prompt and real devices. `probe-block.ps1` blocks and unblocks single devices. `e2e-install.ps1` installs LOTUS with the real setup, arms a policy, checks that one chosen device is blocked and released, restarts the service, switches read-only mode on and off, and uninstalls again. It then installs, updates and removes LOTUS a second time by pressing the buttons of the setup window. Read the comments at the top of each script before running it.
 
 ## About the look
 
