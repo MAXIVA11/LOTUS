@@ -30,6 +30,7 @@ STEPS = [
     ("01-control-disarmed.png", "After setup LOTUS is disarmed. Nothing is blocked yet."),
     ("02-control-pending.png", "Choose the two rules and turn the master switch on."),
     ("03-apply-dialog.png", "Apply lists what the new policy would switch off."),
+    ("03b-password.png", "The first time you arm LOTUS, you choose a password."),
     ("04-control-armed.png", "Armed. The guard service enforces the policy from here on."),
     ("05-devices.png", "Blocked devices are at the top. Trust one from this page."),
     ("06-trusted.png", "Devices on the trusted list are never blocked."),

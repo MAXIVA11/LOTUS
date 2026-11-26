@@ -230,7 +230,7 @@ def banner(still=False, width=1200, height=380):
     o.append(mono(372, 300, "//", 19, DIM))
     markup, end = typed(372 + 3 * 11.4, 300, phrase, 19, 0.9, 0.035, TEXT, "" if still else "k", initials)
     o.append(markup)
-    o.append(mono(372, 338, "NO SERVER AND NO ACCOUNT. NOTHING LEAVES THE PC.", 15, DIM))
+    o.append(mono(372, 338, "BLOCKS REMOVABLE STORAGE AND UNTRUSTED USB DEVICES.", 15, DIM))
 
     if still:
         # A small status panel on the right.
@@ -242,7 +242,7 @@ def banner(still=False, width=1200, height=380):
             ("POLICY", "ARMED", CYAN),
             ("STORAGE", "BLOCK", PINK),
             ("PNP", "TRUSTED ONLY", PINK),
-            ("NETWORK", "NONE", YELLOW),
+            ("PASSWORD", "SET", YELLOW),
         ]
         for i, (label, value, colour) in enumerate(rows):
             y = 138 + i * 27

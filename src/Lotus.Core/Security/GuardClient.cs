@@ -11,6 +11,8 @@ namespace Lotus.Core
     public static class GuardProtocol
     {
         public const string PipeName = "LotusGuard.Control";
+        /// <summary>The pipe of a guard started by hand with --console --dev. Never used by the installed product.</summary>
+        public const string DevPipeName = "LotusGuard.Dev";
         public const string ServiceName = "LotusGuard";
         public const int MaxMessageBytes = 512 * 1024;
 

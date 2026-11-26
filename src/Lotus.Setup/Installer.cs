@@ -142,6 +142,10 @@ namespace Lotus.Setup
         /// </summary>
         private static PasswordRecord ReadStoredPassword()
         {
+            // Only a folder that LOTUS set up itself counts. Otherwise anyone could
+            // plant a store with a password in it and lock setup out of a PC that
+            // never had LOTUS on it.
+            if (FolderGuard.Inspect(DataDir) != null || FolderGuard.IsReparsePoint(SecureDir)) return null;
             foreach (string path in new[] { StoreFile, StoreFile + ".bak" })
             {
                 try
