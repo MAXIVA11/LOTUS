@@ -17,6 +17,12 @@
     <Page Include="..\Lotus.App\Theme\Theme.xaml" Link="Theme\Theme.xaml" />
     <Compile Include="..\Lotus.App\Controls\GlitchText.cs" Link="Controls\GlitchText.cs" />
     <Compile Include="..\Lotus.App\Controls\LotusMark.cs" Link="Controls\LotusMark.cs" />
+    <!-- Setup is a single file with no Lotus.Core.dll next to it, so the few
+         pieces it shares with the service are compiled in. -->
+    <Compile Include="..\Lotus.Core\Json.cs" Link="Shared\Json.cs" />
+    <Compile Include="..\Lotus.Core\Security\GuardClient.cs" Link="Shared\GuardClient.cs" />
+    <Compile Include="..\Lotus.Core\Security\Passwords.cs" Link="Shared\Passwords.cs" />
+    <Compile Include="..\Lotus.Core\Security\FolderGuard.cs" Link="Shared\FolderGuard.cs" />
     <Resource Include="..\Lotus.App\Assets\lotus.ico" Link="Assets\lotus.ico" />
     <EmbeddedResource Include="$(PayloadZip)" LogicalName="payload.zip" Condition="Exists('$(PayloadZip)')" />
     <Reference Include="System.IO.Compression" />

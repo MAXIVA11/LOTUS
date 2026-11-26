@@ -15,6 +15,15 @@ namespace Lotus.Core
         DeviceOpResult Block(string instanceId, out BlockMethod method);
         /// <summary>Switches a device back on, or clears its disabled mark when it is not connected.</summary>
         DeviceOpResult Unblock(string instanceId);
+        /// <summary>One connected device, or null when the ID is not a connected USB device.</summary>
+        UsbDevice ScanOne(string instanceId);
+        /// <summary>Devices Windows remembers that are not connected right now.</summary>
+        List<UsbDevice> ScanAbsent();
+        /// <summary>
+        /// Marks a device that is not connected as disabled, so that it is already
+        /// off when it is plugged in.
+        /// </summary>
+        DeviceOpResult BlockAbsent(string instanceId);
     }
 
     public sealed class WindowsDeviceBackend : IDeviceBackend
@@ -26,11 +35,50 @@ namespace Lotus.Core
         /// </summary>
         public string SystemDiskError { get; private set; }
 
+        // The answer from the last full scan. The single-device path uses it,
+        // because working it out again for every arrival would cost too much time.
+        private HashSet<string> systemAncestors;
+
         public List<UsbDevice> Scan()
         {
             List<UsbDevice> devices = DeviceScanner.Scan();
             MarkSystemDisk(devices);
             return devices;
+        }
+
+        public UsbDevice ScanOne(string instanceId)
+        {
+            UsbDevice device = DeviceScanner.ScanOne(instanceId);
+            if (device == null) return null;
+            if (!device.HasStorage && device.FunctionsKnown && !device.IsOff) return device;
+
+            HashSet<string> ancestors = systemAncestors;
+            if (ancestors == null)
+            {
+                try
+                {
+                    ancestors = SystemDisk.FindAncestors();
+                    systemAncestors = ancestors;
+                }
+                catch (Exception)
+                {
+                    // Leave the decision to the full pass, which reports this problem.
+                    if (device.HasStorage) device.IsSystemDisk = true;
+                    return device;
+                }
+            }
+            if (ancestors.Contains(device.InstanceId)) device.IsSystemDisk = true;
+            return device;
+        }
+
+        public List<UsbDevice> ScanAbsent()
+        {
+            return DeviceScanner.ScanAbsent();
+        }
+
+        public DeviceOpResult BlockAbsent(string instanceId)
+        {
+            return DeviceControl.MarkAbsentDisabled(instanceId);
         }
 
         private void MarkSystemDisk(List<UsbDevice> devices)
@@ -50,6 +98,7 @@ namespace Lotus.Core
             try
             {
                 ancestors = SystemDisk.FindAncestors();
+                systemAncestors = ancestors;
                 SystemDiskError = null;
             }
             catch (Exception ex)

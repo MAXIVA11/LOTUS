@@ -6,6 +6,7 @@
     <Description>LOTUS policy engine and USB device control</Description>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="System.Security" />
     <InternalsVisibleTo Include="Lotus.Tests" />
     <InternalsVisibleTo Include="Lotus.Probe" />
   </ItemGroup>

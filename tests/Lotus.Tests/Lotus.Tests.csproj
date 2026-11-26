@@ -9,6 +9,7 @@
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <ProjectReference Include="..\..\src\Lotus.Core\Lotus.Core.csproj" />
-    <ProjectReference Include="..\..\src\Lotus.Setup\Lotus.Setup.csproj" />
+    <!-- Setup compiles a few Lotus.Core files into itself, so it gets its own name here. -->
+    <ProjectReference Include="..\..\src\Lotus.Setup\Lotus.Setup.csproj" Aliases="setup" />
   </ItemGroup>
 </Project>

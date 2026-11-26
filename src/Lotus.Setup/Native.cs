@@ -11,6 +11,7 @@ namespace Lotus.Setup
     {
         private const uint SC_MANAGER_ALL_ACCESS = 0xF003F;
         private const uint SERVICE_ALL_ACCESS = 0xF01FF;
+        private const uint SERVICE_QUERY_STATUS = 0x4;
         private const uint SERVICE_WIN32_OWN_PROCESS = 0x10;
         private const uint SERVICE_AUTO_START = 0x2;
         private const uint SERVICE_ERROR_NORMAL = 0x1;
@@ -54,7 +55,9 @@ namespace Lotus.Setup
             IntPtr manager = OpenManager();
             try
             {
-                IntPtr service = OpenServiceW(manager, name, SERVICE_ALL_ACCESS);
+                // Ask for as little as possible. The service's own permissions deny
+                // administrators most rights, and "it exists" must not depend on them.
+                IntPtr service = OpenServiceW(manager, name, SERVICE_QUERY_STATUS);
                 if (service == IntPtr.Zero) return false;
                 CloseServiceHandle(service);
                 return true;

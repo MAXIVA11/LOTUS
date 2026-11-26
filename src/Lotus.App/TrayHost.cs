@@ -58,7 +58,7 @@ namespace Lotus.App
         {
             foreach (LotusEvent e in tail.ReadNew())
             {
-                if (e.Type == EventTypes.Blocked) ToastWindow.Show(e, openMain);
+                if (e.Type == EventTypes.Blocked || e.Type == EventTypes.Tamper) ToastWindow.Show(e, openMain);
             }
             // The policy rarely changes, so look at it every five seconds only.
             if (++ticks % 5 == 0) UpdateState();
@@ -66,17 +66,17 @@ namespace Lotus.App
 
         private void UpdateState()
         {
-            try
-            {
-                Policy policy = PolicyStore.Load(LotusPaths.PolicyFile).Policy;
-                state = policy.Armed ? "ARMED" : "DISARMED";
-                icon.Text = "LOTUS: " + (policy.Armed ? "armed" : "disarmed");
-            }
-            catch (Exception)
+            // The notifier has no rights of its own and cannot read the policy. It
+            // reads the small status file LOTUS Guard keeps for it.
+            PublicStatus status = PublicStatus.Read();
+            if (!status.Known)
             {
                 state = "";
                 icon.Text = "LOTUS";
+                return;
             }
+            state = status.Lockdown ? "LOCKED DOWN" : status.Armed ? "ARMED" : "DISARMED";
+            icon.Text = "LOTUS: " + state.ToLowerInvariant();
         }
 
         public void Dispose()

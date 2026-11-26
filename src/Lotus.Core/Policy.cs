@@ -38,6 +38,14 @@ namespace Lotus.Core
         public string Id = "";
         public string Name = "";
         public DateTime AddedUtc = DateTime.UtcNow;
+        /// <summary>
+        /// The USB functions the device had when it was trusted, as class codes. A
+        /// device that later shows up with a function that is not in this list is
+        /// no longer covered, because a "trusted headset" that suddenly is a
+        /// keyboard too is exactly what a hostile device looks like. Empty means
+        /// the entry was made without this information and covers any function.
+        /// </summary>
+        public List<string> Functions = new List<string>();
 
         public bool Matches(UsbDevice device)
         {
@@ -46,14 +54,26 @@ namespace Lotus.Core
             return string.Equals(Id, target, StringComparison.OrdinalIgnoreCase);
         }
 
+        /// <summary>True when the device does nothing beyond what it did when it was trusted.</summary>
+        public bool Covers(UsbDevice device)
+        {
+            if (Functions.Count == 0 || device == null || !device.FunctionsKnown) return true;
+            foreach (string function in device.Functions)
+            {
+                if (!Functions.Contains(function)) return false;
+            }
+            return true;
+        }
+
         public static TrustEntry ForDevice(UsbDevice device)
         {
             return new TrustEntry
             {
                 Kind = TrustKind.Device,
                 Id = Policy.NormalizeId(device.InstanceId),
-                Name = device.Name,
-                AddedUtc = DateTime.UtcNow
+                Name = TextSafety.Clean(device.Name),
+                AddedUtc = DateTime.UtcNow,
+                Functions = PinFor(device)
             };
         }
 
@@ -63,9 +83,15 @@ namespace Lotus.Core
             {
                 Kind = TrustKind.Model,
                 Id = Policy.NormalizeId(device.ModelId),
-                Name = device.Name,
-                AddedUtc = DateTime.UtcNow
+                Name = TextSafety.Clean(device.Name),
+                AddedUtc = DateTime.UtcNow,
+                Functions = PinFor(device)
             };
+        }
+
+        private static List<string> PinFor(UsbDevice device)
+        {
+            return device.FunctionsKnown ? new List<string>(device.Functions) : new List<string>();
         }
     }
 
@@ -77,6 +103,8 @@ namespace Lotus.Core
     public sealed class Policy
     {
         public const int CurrentVersion = 1;
+        /// <summary>Far more than anyone needs, and small enough that a hostile file cannot stall the service.</summary>
+        public const int MaxTrusted = 5000;
 
         public int Version = CurrentVersion;
         /// <summary>Master switch. While this is off LOTUS blocks nothing.</summary>
@@ -95,11 +123,24 @@ namespace Lotus.Core
             return (id ?? "").Trim().ToUpperInvariant();
         }
 
+        /// <summary>The entry that makes this device trusted, or null.</summary>
         public TrustEntry FindTrust(UsbDevice device)
         {
+            return FindTrust(device, out TrustEntry _);
+        }
+
+        /// <param name="outgrown">
+        /// Set when an entry names this device but the device now has a function it
+        /// did not have when it was trusted. Such an entry does not count.
+        /// </param>
+        public TrustEntry FindTrust(UsbDevice device, out TrustEntry outgrown)
+        {
+            outgrown = null;
             foreach (TrustEntry entry in Trusted)
             {
-                if (entry.Matches(device)) return entry;
+                if (!entry.Matches(device)) continue;
+                if (entry.Covers(device)) return entry;
+                outgrown = entry;
             }
             return null;
         }
@@ -152,7 +193,8 @@ namespace Lotus.Core
                     Kind = entry.Kind,
                     Id = entry.Id,
                     Name = entry.Name,
-                    AddedUtc = entry.AddedUtc
+                    AddedUtc = entry.AddedUtc,
+                    Functions = new List<string>(entry.Functions)
                 });
             }
             return copy;
@@ -170,7 +212,8 @@ namespace Lotus.Core
                     ["kind"] = entry.Kind == TrustKind.Device ? "device" : "model",
                     ["id"] = entry.Id,
                     ["name"] = entry.Name ?? "",
-                    ["added"] = Json.FormatTime(entry.AddedUtc)
+                    ["added"] = Json.FormatTime(entry.AddedUtc),
+                    ["functions"] = new List<object>(entry.Functions)
                 });
             }
             var root = new Dictionary<string, object>
@@ -233,13 +276,26 @@ namespace Lotus.Core
                 {
                     throw new FormatException("Unknown trust kind \"" + kind + "\".");
                 }
-                policy.AddTrust(new TrustEntry
+                var entry = new TrustEntry
                 {
                     Kind = kind == "model" ? TrustKind.Model : TrustKind.Device,
                     Id = id,
-                    Name = Json.GetString(obj, "name", ""),
+                    Name = TextSafety.Clean(Json.GetString(obj, "name", "")),
                     AddedUtc = Json.ParseTime(Json.GetString(obj, "added", null), DateTime.UtcNow)
-                });
+                };
+                foreach (object function in Json.GetList(obj, "functions"))
+                {
+                    if (function is string code && code.Length > 0 && code.Length <= 8 &&
+                        entry.Functions.Count < 64 && !entry.Functions.Contains(code.ToUpperInvariant()))
+                    {
+                        entry.Functions.Add(code.ToUpperInvariant());
+                    }
+                }
+                if (policy.Trusted.Count >= MaxTrusted)
+                {
+                    throw new FormatException("The trusted list is longer than " + MaxTrusted + " entries.");
+                }
+                policy.AddTrust(entry);
             }
             return policy;
         }

@@ -16,7 +16,8 @@ namespace Lotus.App
     public partial class ToastWindow : Window
     {
         private static readonly List<ToastWindow> Open = new List<ToastWindow>();
-        private static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(9);
+        // Long enough to notice from across the desk, read, and walk over.
+        private static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(25);
         private readonly DispatcherTimer timer = new DispatcherTimer { Interval = Lifetime };
         private readonly Action onClick;
 
@@ -36,6 +37,10 @@ namespace Lotus.App
             ReasonText.Text = (reason + " Click to open LOTUS.").Trim();
 
             timer.Tick += (s, a) => Close();
+            // It stays for as long as the pointer rests on it, and the clock starts
+            // again when the pointer leaves.
+            MouseEnter += (s, a) => timer.Stop();
+            MouseLeave += (s, a) => { if (IsLoaded) timer.Start(); };
             MouseLeftButtonUp += OnClicked;
             Loaded += OnLoaded;
             Closed += (s, a) =>

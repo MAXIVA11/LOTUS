@@ -177,6 +177,8 @@ namespace Lotus.App
                 case EventTypes.GuardStarted:
                 case EventTypes.GuardStopped: row.TypeText = "GUARD"; row.TypeKey = "quiet"; break;
                 case EventTypes.Error: row.TypeText = "ERROR"; row.TypeKey = "warn"; break;
+                case EventTypes.Tamper: row.TypeText = "TAMPERING"; row.TypeKey = "stop"; break;
+                case EventTypes.Security: row.TypeText = "PASSWORD"; row.TypeKey = "info"; break;
                 default: row.TypeText = "WARNING"; row.TypeKey = "warn"; break;
             }
             return row;
@@ -199,6 +201,27 @@ namespace Lotus.App
         public string Warning = "";
         public string ConfirmText = "APPLY";
         public bool Danger;
+        public PasswordAsk Ask = PasswordAsk.None;
+        /// <summary>Shown in red above the buttons, for example after a wrong password.</summary>
+        public string Error = "";
+    }
+
+    /// <summary>Which password fields a dialog shows.</summary>
+    public enum PasswordAsk
+    {
+        None,
+        /// <summary>The current password.</summary>
+        Enter,
+        /// <summary>A new password, typed twice.</summary>
+        Create,
+        /// <summary>The current password and a new one, typed twice.</summary>
+        Change
+    }
+
+    public sealed class PasswordAnswer
+    {
+        public string Current = "";
+        public string New = "";
     }
 
     /// <summary>A policy change that is ready to be confirmed and saved.</summary>
@@ -218,6 +241,8 @@ namespace Lotus.App
         private GuardState guard;
         private bool readOnlyActive;
         private bool loaded;
+        private bool hasPassword;
+        private bool lockdown;
         private string policyError;
         private string eventsSignature = "";
         private string trustSignature = "";
@@ -279,8 +304,17 @@ namespace Lotus.App
         public bool GuardOk => guard == GuardState.Running || guard == GuardState.Simulated;
         public bool GuardStopped => loaded && guard == GuardState.Stopped;
         public bool GuardMissing => loaded && guard == GuardState.NotInstalled;
-        public bool HasPolicyError => !string.IsNullOrEmpty(policyError);
-        public string PolicyErrorText => "The policy file could not be read: " + policyError;
+        public bool HasPolicyError => lockdown || !string.IsNullOrEmpty(policyError);
+        public string PolicyErrorText => lockdown
+            ? "LOTUS is locked down. Its policy store was damaged or removed, so removable storage and " +
+              "untrusted USB devices are blocked. Run LOTUS-Setup again to reset it."
+            : policyError;
+
+        public bool HasPassword => hasPassword;
+        public string PasswordButtonText => hasPassword ? "CHANGE PASSWORD" : "SET A PASSWORD";
+        public string ProtectionText => hasPassword
+            ? "A LOTUS password is set. Every change to the policy, the trusted list and the password itself asks for it, and so does removing LOTUS."
+            : "No LOTUS password is set yet. You choose one the first time you arm LOTUS. From then on every change asks for it.";
         public bool NoDevices => loaded && Devices.Count == 0;
         public bool NoTrusted => loaded && Trusted.Count == 0;
         public bool NoEvents => loaded && Events.Count == 0;
@@ -431,6 +465,8 @@ namespace Lotus.App
             guard = snapshot.Guard;
             readOnlyActive = snapshot.ReadOnlyActive;
             policyError = snapshot.PolicyError;
+            hasPassword = snapshot.HasPassword;
+            lockdown = snapshot.Lockdown;
             lastDevices = snapshot.Devices;
 
             // Follow the saved policy unless the user is in the middle of editing.
@@ -456,6 +492,9 @@ namespace Lotus.App
             Raise(nameof(GuardMissing));
             Raise(nameof(HasPolicyError));
             Raise(nameof(PolicyErrorText));
+            Raise(nameof(HasPassword));
+            Raise(nameof(PasswordButtonText));
+            Raise(nameof(ProtectionText));
             Raise(nameof(NoDevices));
             Raise(nameof(NoTrusted));
             Raise(nameof(NoEvents));
@@ -620,7 +659,8 @@ namespace Lotus.App
             return plan;
         }
 
-        public void Commit(ApplyPlan plan, bool trustCandidates)
+        /// <summary>The policy a confirmed plan leads to. Nothing is saved yet.</summary>
+        public Policy Finish(ApplyPlan plan, bool trustCandidates)
         {
             if (trustCandidates)
             {
@@ -631,17 +671,16 @@ namespace Lotus.App
                     plan.Next.AddTrust(device.HasSerial ? TrustEntry.ForDevice(device) : TrustEntry.ForModel(device));
                 }
             }
-            Save(plan.Next);
-            CopySettings(plan.Next, draft);
-            RaiseDraft();
+            return plan.Next;
         }
 
-        public void Trust(DeviceRow row, TrustKind kind)
+        /// <summary>The current policy with one more trusted device. Nothing is saved yet.</summary>
+        public Policy WithTrust(DeviceRow row, TrustKind kind)
         {
-            if (row?.Device == null) return;
+            if (row?.Device == null) return null;
             Policy next = live.Clone();
             next.AddTrust(kind == TrustKind.Model ? TrustEntry.ForModel(row.Device) : TrustEntry.ForDevice(row.Device));
-            Save(next);
+            return next;
         }
 
         /// <summary>
@@ -678,11 +717,16 @@ namespace Lotus.App
                 : live.Trusted.Where(e => e.Matches(row.Device)).ToList();
         }
 
-        public void Save(Policy next)
+        /// <summary>Called after LOTUS Guard accepted a policy, so the window shows it without waiting.</summary>
+        public void Accepted(Policy next, bool followSettings)
         {
-            backend.SavePolicy(next);
             live = next.Clone();
-            Raise(nameof(HasChanges));
+            if (followSettings) CopySettings(next, draft);
+            hasPassword = hasPassword || next.Armed;
+            Raise(nameof(HasPassword));
+            Raise(nameof(PasswordButtonText));
+            Raise(nameof(ProtectionText));
+            RaiseDraft();
         }
     }
 }

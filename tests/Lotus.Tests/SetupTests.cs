@@ -1,4 +1,5 @@
-using Lotus.Setup;
+extern alias setup;
+using setup::Lotus.Setup;
 using Xunit;
 
 namespace Lotus.Tests
