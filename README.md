@@ -3,11 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MAXIVA11/LOTUS/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/MAXIVA11/LOTUS/build.yml?branch=main&style=for-the-badge&label=build&labelColor=08080C&color=3DFF8B" alt="Build status"></a>
-  <img src="https://img.shields.io/badge/windows-10%20and%2011-00F0FF?style=for-the-badge&labelColor=08080C" alt="Runs on Windows 10 and 11">
-  <img src="https://img.shields.io/badge/.net%20framework-4.6.2-00F0FF?style=for-the-badge&labelColor=08080C" alt="Uses .NET Framework 4.6.2">
-  <img src="https://img.shields.io/badge/network-none-FCEE0A?style=for-the-badge&labelColor=08080C" alt="No network access">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-FF2D95?style=for-the-badge&labelColor=08080C" alt="MIT license"></a>
+  <a href="https://github.com/MAXIVA11/LOTUS/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/MAXIVA11/LOTUS/build.yml?branch=main&style=flat-square&label=build&labelColor=08080C&color=3DFF8B" alt="Build status"></a>
+  <a href="https://github.com/MAXIVA11/LOTUS/releases/latest"><img src="https://img.shields.io/github/v/release/MAXIVA11/LOTUS?style=flat-square&label=release&labelColor=08080C&color=00F0FF" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-FF2D95?style=flat-square&labelColor=08080C" alt="MIT license"></a>
 </p>
 
 <p align="center">
@@ -45,14 +43,6 @@ A device you trust as "this device" is matched by its serial number. A device yo
 - Before a policy is applied, LOTUS lists the connected devices it would switch off.
 - A blocked device stays off after it is replugged, after a restart, and while the service is stopped.
 - An activity log records every block and release, and a small notifier next to the clock tells whoever is at the PC why the thing they just plugged in does nothing.
-
-## What happens when a device is plugged in
-
-<p align="center">
-  <img src="docs/assets/guard-feed.svg" width="100%" alt="A replay in two parts. An unknown SanDisk flash drive is plugged in while removable storage is set to block, and LOTUS switches it off. A HyperX headset whose model is on the trusted list is plugged in while USB devices are set to trusted only, and it keeps working.">
-</p>
-
-The replay shows two cases. An unknown flash drive arrives while removable storage is set to Block, and LOTUS switches it off. A headset whose model is on the trusted list arrives while PnP devices is set to Trusted only, and it keeps working. The last line of each case is the sentence the Devices page shows for that device.
 
 <img src="docs/assets/divider.svg" width="100%" alt="">
 
@@ -162,10 +152,6 @@ The policy is one small JSON file, `C:\ProgramData\LOTUS\policy.json`. Administr
 
 `storage` is `allow`, `readonly` or `block`. `pnp` is `allow` or `block`. If the file is damaged, the service keeps the last policy it loaded and writes the reason to the activity log.
 
-<p align="center">
-  <img src="docs/images/activity.png" width="100%" alt="The activity log">
-</p>
-
 ## Try it without installing
 
 `LOTUS.exe --demo` opens the app with simulated devices and a simulated guard. Nothing on the PC is changed, and you can plug a pretend flash drive in and out to see blocking and the notification.
@@ -218,10 +204,8 @@ The scripts in `tests\hardware` need an administrator prompt and real devices. `
 
 ## About the look
 
-The interface borrows from the hacker style of Watch Dogs 2: neon on black, hazard stripes and glitching type. The artwork on this page is drawn by `tools/make-readme-art.py` as plain animated SVG, and the walkthrough is assembled by `tools/make-demo.py` from pictures the app renders of itself. LOTUS is an independent project and is not affiliated with Ubisoft.
+The interface borrows from the hacker style of Watch Dogs 2: neon on black, hazard stripes and glitching type. The artwork on this page is drawn by `tools/make-readme-art.py` as plain SVG, and the walkthrough is assembled by `tools/make-demo.py` from pictures the app renders of itself. LOTUS is an independent project and is not affiliated with Ubisoft.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-<img src="docs/assets/divider.svg" width="100%" alt="">

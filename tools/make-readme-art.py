@@ -1,13 +1,13 @@
-"""Draws the animated artwork used by README.md.
+"""Draws the artwork used by README.md.
 
 Run it from the repository root with any Python 3:
 
     python tools/make-readme-art.py
 
-It writes four SVG files to docs/assets. GitHub shows an SVG in a README as a
-plain image, so the files use only inline CSS and SMIL: no scripts, no web
-fonts and no outside files. Text that has to line up is placed one character
-at a time, because the reader's monospace font is not known in advance.
+It writes three SVG files to docs/assets. GitHub shows an SVG in a README as a
+plain image, so the files use only inline CSS: no scripts, no web fonts and no
+outside files. The pictures hold still. The one exception is the banner, which
+builds itself once when the page opens and then stays as it is.
 
     python tools/make-readme-art.py --social <file.svg>
 
@@ -55,14 +55,6 @@ LETTER_STEP = 100
 BASE_CSS = (
     ".mono{font-family:%s}"
     ".cond{font-family:%s;font-weight:700;font-stretch:condensed}"
-    "@keyframes slide{to{transform:translateX(32px)}}"
-    "@keyframes slideback{to{transform:translateX(-32px)}}"
-    "@keyframes blink{0%%,49%%{opacity:1}50%%,100%%{opacity:0}}"
-    "@keyframes pulse{0%%,100%%{opacity:1}50%%{opacity:.25}}"
-    ".slide{animation:slide 1.4s linear infinite}"
-    ".slideback{animation:slideback 1.4s linear infinite}"
-    ".blink{animation:blink 1s steps(1) infinite}"
-    ".pulse{animation:pulse 1.6s ease-in-out infinite}"
 ) % (MONO, COND)
 
 # People who ask their system for less motion get the finished picture.
@@ -88,14 +80,9 @@ def hazard_pattern(pattern_id="hz"):
     )
 
 
-def hazard_strip(x, y, width, height, clip_id, back=False):
-    """A strip of warning stripes that slides sideways for ever."""
-    return (
-        '<clipPath id="%s"><rect x="%g" y="%g" width="%g" height="%g"/></clipPath>'
-        '<g clip-path="url(#%s)"><rect class="%s" x="%g" y="%g" width="%g" height="%g" fill="url(#hz)"/></g>'
-        % (clip_id, x, y, width, height, clip_id, "slideback" if back else "slide",
-           x - 64, y, width + 128, height)
-    )
+def hazard_strip(x, y, width, height):
+    """A strip of warning stripes."""
+    return '<rect x="%g" y="%g" width="%g" height="%g" fill="url(#hz)"/>' % (x, y, width, height)
 
 
 def mono(x, y, text, size, fill, anchor="start", extra=""):
@@ -146,20 +133,12 @@ def petals(scale, dx, dy, css_class=None):
 
 
 def scanlines(width, height):
-    return (
-        '<rect width="%d" height="%d" fill="url(#scan)"/>'
-        '<rect class="sweep" x="0" y="-80" width="%d" height="80" fill="url(#sweepfill)"/>'
-        % (width, height, width)
-    )
+    return '<rect width="%d" height="%d" fill="url(#scan)"/>' % (width, height)
 
 
 SCAN_DEFS = (
     '<pattern id="scan" width="4" height="4" patternUnits="userSpaceOnUse">'
     '<rect width="4" height="1" fill="#000" opacity=".16"/></pattern>'
-    '<linearGradient id="sweepfill" x1="0" y1="0" x2="0" y2="1">'
-    '<stop offset="0" stop-color="#fff" stop-opacity="0"/>'
-    '<stop offset=".5" stop-color="#fff" stop-opacity=".05"/>'
-    '<stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>'
 )
 
 
@@ -190,43 +169,19 @@ def banner(still=False, width=1200, height=380):
         frame = [0, 0, w, 0, w, h, 0, h]
     zoom = w / 1200.0  # the content is designed for 1200 by 380
     oy = (h - 380 * zoom) / 2.0
+    # The social preview has room for a status panel. The README banner leaves
+    # it out and moves the rest to the middle.
+    shift = 0 if still else 128
 
-    css = BASE_CSS + (
-        "@keyframes pop{from{opacity:0;transform:scale(.2)}to{opacity:1;transform:scale(1)}}"
-        ".pop{animation:pop .55s cubic-bezier(.2,1.5,.4,1) both;transform-box:fill-box;transform-origin:50% 100%}"
-        "@keyframes breath{0%,100%{opacity:.25}50%{opacity:.7}}"
-        ".breath{animation:breath 4s ease-in-out infinite}"
-        "@keyframes turn{to{transform:rotate(360deg)}}"
-        "@keyframes turnback{to{transform:rotate(-360deg)}}"
-        ".ring{animation:turn 40s linear infinite;transform-origin:189px 187px}"
-        ".arc{animation:turnback 9s linear infinite;transform-origin:189px 187px}"
-        "@keyframes k{from{opacity:0}to{opacity:1}}"
-        ".k{animation:k .01s steps(1) both}"
-        ".late{animation:k .01s steps(1) both,blink 1s steps(1) infinite}"
-        "@keyframes ga{0%,84%,100%{transform:translate(5px,3px)}85%{transform:translate(18px,3px)}"
-        "87%{transform:translate(-9px,5px)}89%{transform:translate(26px,0)}91%{transform:translate(5px,3px)}"
-        "95%{transform:translate(12px,-2px)}96%{transform:translate(5px,3px)}}"
-        "@keyframes gb{0%,84%,100%{transform:translate(-5px,-3px)}85%{transform:translate(-20px,-3px)}"
-        "87%{transform:translate(8px,-6px)}89%{transform:translate(-28px,0)}91%{transform:translate(-5px,-3px)}"
-        "95%{transform:translate(-13px,2px)}96%{transform:translate(-5px,-3px)}}"
-        "@keyframes s1{0%,84%,100%{transform:translate(0,0)}85%{transform:translate(34px,0)}"
-        "88%{transform:translate(-22px,0)}91%{transform:translate(0,0)}}"
-        "@keyframes s2{0%,86%,100%{transform:translate(0,0)}87%{transform:translate(-40px,0)}"
-        "89%{transform:translate(16px,0)}91%{transform:translate(0,0)}95%{transform:translate(-10px,0)}"
-        "96%{transform:translate(0,0)}}"
-        "@keyframes hide{0%,84%,100%{opacity:0}85%,90%{opacity:1}91%{opacity:0}}"
-        "@keyframes hide2{0%,86%,100%{opacity:0}87%,90%{opacity:1}91%{opacity:0}95%{opacity:1}96%{opacity:0}}"
-        ".ga{transform:translate(5px,3px);animation:ga 5s steps(1) infinite}"
-        ".gb{transform:translate(-5px,-3px);animation:gb 5s steps(1) infinite}"
-        ".s1{animation:s1 5s steps(1) infinite}.s2{animation:s2 5s steps(1) infinite}"
-        ".h1{animation:hide 5s steps(1) infinite}.h2{animation:hide2 5s steps(1) infinite}"
-        "@keyframes sweep{to{transform:translateY(SWEEPpx)}}"
-        ".sweep{animation:sweep 7s linear infinite}"
-        "@keyframes port{0%,100%{opacity:.25}50%{opacity:1}}"
-        ".port{animation:port 2.4s steps(2) infinite}"
-    ).replace("SWEEP", str(h + 160)) + STILL_CSS
-    if still:
-        css += "*{animation:none!important}"
+    # The petals and the line of text appear once. Nothing repeats.
+    css = BASE_CSS
+    if not still:
+        css += (
+            "@keyframes pop{from{opacity:0;transform:scale(.2)}to{opacity:1;transform:scale(1)}}"
+            ".pop{animation:pop .55s cubic-bezier(.2,1.5,.4,1) both;transform-box:fill-box;transform-origin:50% 100%}"
+            "@keyframes k{from{opacity:0}to{opacity:1}}"
+            ".k{animation:k .01s steps(1) both}"
+        ) + STILL_CSS
 
     o = [svg_open(w, h, "LOTUS", "Local Operational Trusted USB System. Offline device control for Windows.")]
     o.append("<defs>")
@@ -234,8 +189,6 @@ def banner(still=False, width=1200, height=380):
     o.append(grid_pattern())
     o.append(SCAN_DEFS)
     o.append('<clipPath id="frame"><polygon points="%s"/></clipPath>' % points(frame))
-    o.append('<clipPath id="band1"><rect x="-60" y="22" width="640" height="26"/></clipPath>')
-    o.append('<clipPath id="band2"><rect x="-60" y="74" width="640" height="18"/></clipPath>')
     o.append(
         '<radialGradient id="halo" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="%s" stop-opacity=".16"/>'
         '<stop offset="1" stop-color="%s" stop-opacity="0"/></radialGradient>' % (CYAN, CYAN)
@@ -249,37 +202,18 @@ def banner(still=False, width=1200, height=380):
     o.append('<rect width="%d" height="%d" fill="url(#grid)"/>' % (w, h))
     # A large faint flower in the corner, like the one behind the app's pages.
     o.append('<g opacity=".05">%s</g>' % petals(4.6, w - 420, h - 330))
-    o.append('<g transform="translate(0 %g) scale(%g)">' % (round(oy, 2), round(zoom, 4)))
+    o.append('<g transform="translate(%g %g) scale(%g)">' % (round(shift * zoom, 2), round(oy, 2), round(zoom, 4)))
     o.append('<ellipse cx="640" cy="160" rx="430" ry="200" fill="url(#halo)"/>')
 
-    # The mark, with two slow rings behind it.
-    o.append(
-        '<circle class="ring" cx="189" cy="187" r="142" fill="none" stroke="%s" stroke-width="2" '
-        'stroke-dasharray="3 15" opacity=".9"/>' % LINE
-    )
-    o.append(
-        '<circle class="arc" cx="189" cy="187" r="156" fill="none" stroke="%s" stroke-width="2" '
-        'stroke-dasharray="70 910" opacity=".8"/>' % CYAN
-    )
-    o.append(
-        '<circle class="ring" cx="189" cy="187" r="156" fill="none" stroke="%s" stroke-width="2" '
-        'stroke-dasharray="26 954" opacity=".8"/>' % PINK
-    )
-    o.append('<g class="breath" filter="url(#glow)">%s</g>' % petals(2.5, 64, 62))
-    o.append(petals(2.5, 64, 62, "pop"))
+    # The mark, with a soft glow behind it.
+    o.append('<g opacity=".45" filter="url(#glow)">%s</g>' % petals(2.5, 64, 62))
+    o.append(petals(2.5, 64, 62, None if still else "pop"))
 
-    # The word, with its two colour ghosts and two slices that jump sideways.
+    # The word, with the two colour ghosts the app's title has.
     o.append('<g transform="translate(372 78)">')
-    o.append('<g class="ga">%s</g>' % word(PINK))
-    o.append('<g class="gb">%s</g>' % word(CYAN))
+    o.append('<g transform="translate(5 3)">%s</g>' % word(PINK))
+    o.append('<g transform="translate(-5 -3)">%s</g>' % word(CYAN))
     o.append(word(TEXT))
-    # Each slice is hidden until its moment, so the word is clean between glitches.
-    o.append('<g class="h1" opacity="0"><rect x="-60" y="22" width="640" height="26" fill="%s"/>' % INK)
-    o.append('<g clip-path="url(#band1)"><g class="s1">%s%s</g></g></g>' % (
-        '<g transform="translate(-7 0)">%s</g>' % word(CYAN), word(TEXT)))
-    o.append('<g class="h2" opacity="0"><rect x="-60" y="74" width="640" height="18" fill="%s"/>' % INK)
-    o.append('<g clip-path="url(#band2)"><g class="s2">%s%s</g></g></g>' % (
-        '<g transform="translate(7 0)">%s</g>' % word(PINK), word(TEXT)))
     o.append("</g>")
 
     # The yellow tag under the word.
@@ -294,44 +228,38 @@ def banner(still=False, width=1200, height=380):
     phrase = "LOCAL OPERATIONAL TRUSTED USB SYSTEM"
     initials = {0: YELLOW, 6: YELLOW, 18: YELLOW, 26: YELLOW, 30: YELLOW}
     o.append(mono(372, 300, "//", 19, DIM))
-    markup, end = typed(372 + 3 * 11.4, 300, phrase, 19, 1.1, 0.045, TEXT, "k", initials)
+    markup, end = typed(372 + 3 * 11.4, 300, phrase, 19, 0.9, 0.035, TEXT, "" if still else "k", initials)
     o.append(markup)
-    o.append(
-        '<rect class="late" style="animation-delay:%.2fs,%.2fs" x="%g" y="284" width="11" height="19" fill="%s"/>'
-        % (end, end, round(372 + 3 * 11.4 + len(phrase) * 11.4 + 6, 1), CYAN)
-    )
     o.append(mono(372, 338, "NO SERVER AND NO ACCOUNT. NOTHING LEAVES THE PC.", 15, DIM))
 
-    # A small status panel on the right.
-    o.append('<rect x="930" y="78" width="232" height="216" fill="%s" stroke="%s"/>' % (PANEL, LINE))
-    o.append('<rect x="930" y="78" width="4" height="216" fill="%s"/>' % CYAN)
-    o.append(mono(952, 106, "//  GUARD", 14, DIM))
-    rows = [
-        ("SERVICE", "RUNNING", GREEN),
-        ("POLICY", "ARMED", CYAN),
-        ("STORAGE", "BLOCK", PINK),
-        ("PNP", "TRUSTED ONLY", PINK),
-        ("NETWORK", "NONE", YELLOW),
-    ]
-    for i, (label, value, colour) in enumerate(rows):
-        y = 138 + i * 27
-        o.append(mono(952, y, label, 15, DIM))
-        o.append(mono(1146, y, value, 15, colour, "end"))
-    o.append('<rect class="pulse" x="1058" y="127" width="10" height="10" fill="%s"/>' % GREEN)
-    o.append('<path d="M952 256H1146" stroke="%s"/>' % LINE)
-    o.append(mono(952, 280, "PORTS", 15, DIM))
-    for i in range(8):
-        colour = PINK if i in (2, 5) else CYAN
-        o.append(
-            '<rect class="port" style="animation-delay:%.2fs" x="%d" y="270" width="10" height="10" fill="%s"/>'
-            % (-0.3 * ((i * 5) % 8), 1018 + i * 16, colour)
-        )
+    if still:
+        # A small status panel on the right.
+        o.append('<rect x="930" y="78" width="232" height="216" fill="%s" stroke="%s"/>' % (PANEL, LINE))
+        o.append('<rect x="930" y="78" width="4" height="216" fill="%s"/>' % CYAN)
+        o.append(mono(952, 106, "//  GUARD", 14, DIM))
+        rows = [
+            ("SERVICE", "RUNNING", GREEN),
+            ("POLICY", "ARMED", CYAN),
+            ("STORAGE", "BLOCK", PINK),
+            ("PNP", "TRUSTED ONLY", PINK),
+            ("NETWORK", "NONE", YELLOW),
+        ]
+        for i, (label, value, colour) in enumerate(rows):
+            y = 138 + i * 27
+            o.append(mono(952, y, label, 15, DIM))
+            o.append(mono(1146, y, value, 15, colour, "end"))
+        o.append('<rect x="1058" y="127" width="10" height="10" fill="%s"/>' % GREEN)
+        o.append('<path d="M952 256H1146" stroke="%s"/>' % LINE)
+        o.append(mono(952, 280, "PORTS", 15, DIM))
+        for i in range(8):
+            colour = PINK if i in (2, 5) else CYAN
+            o.append('<rect x="%d" y="270" width="10" height="10" fill="%s"/>' % (1018 + i * 16, colour))
 
     o.append("</g>")
 
     # Warning stripes and corner marks on the frame itself.
-    o.append(hazard_strip(0, 0, 430, 10, "hzt"))
-    o.append(hazard_strip(w - 430, h - 10, 430, 10, "hzb", back=True))
+    o.append(hazard_strip(0, 0, 430, 10))
+    o.append(hazard_strip(w - 430, h - 10, 430, 10))
     o.append(scanlines(w, h))
     if not still:
         o.append('<polygon points="%s" fill="none" stroke="%s" stroke-width="2"/>' % (points(frame), LINE))
@@ -347,193 +275,15 @@ def banner(still=False, width=1200, height=380):
 
 
 def divider():
-    w, h = 1200, 14
-    css = BASE_CSS + (
-        "@keyframes run{from{transform:translateX(-140px)}to{transform:translateX(1260px)}}"
-        "@keyframes runback{from{transform:translateX(1260px)}to{transform:translateX(-140px)}}"
-        ".run{animation:run 5s linear infinite}.runback{animation:runback 7s linear infinite}"
-    ) + STILL_CSS
-    o = [svg_open(w, h, "Divider", "A strip of warning stripes.")]
+    w, h = 1200, 10
+    o = [svg_open(w, h, "Divider", "A line with warning stripes at both ends.")]
     o.append("<defs>%s" % hazard_pattern())
-    o.append('<clipPath id="bar"><polygon points="14,0 1200,0 1186,14 0,14"/></clipPath>')
-    o.append(
-        '<linearGradient id="tail" x1="0" x2="1"><stop offset="0" stop-color="%s" stop-opacity="0"/>'
-        '<stop offset="1" stop-color="%s"/></linearGradient>' % (CYAN, CYAN)
-    )
-    o.append(
-        '<linearGradient id="tailback" x1="1" x2="0"><stop offset="0" stop-color="%s" stop-opacity="0"/>'
-        '<stop offset="1" stop-color="%s"/></linearGradient>' % (PINK, PINK)
-    )
-    o.append("</defs><style>%s</style>" % css)
+    o.append('<clipPath id="bar"><polygon points="10,0 1200,0 1190,10 0,10"/></clipPath>')
+    o.append("</defs>")
     o.append('<g clip-path="url(#bar)">')
-    o.append('<rect width="%d" height="%d" fill="%s"/>' % (w, h, INK))
-    o.append('<path d="M0 7H1200" stroke="%s" stroke-width="2"/>' % LINE)
-    o.append('<rect class="run" x="0" y="5" width="140" height="2" fill="url(#tail)"/>')
-    o.append('<rect class="runback" x="0" y="7" width="140" height="2" fill="url(#tailback)"/>')
-    o.append(hazard_strip(0, 0, 210, 14, "dl"))
-    o.append(hazard_strip(990, 0, 210, 14, "dr", back=True))
-    o.append("</g></svg>")
-    return "".join(o)
-
-
-# ---------------------------------------------------------------- guard feed
-
-
-def usb_stick(colour):
-    return (
-        '<g fill="none" stroke="%s" stroke-width="3" stroke-linejoin="miter">'
-        '<path d="M-24 -66H24V-30H-24Z"/><path d="M-12 -54V-44M12 -54V-44"/>'
-        '<path d="M-36 -30H36V52L22 66H-36Z"/><path d="M-14 4H14M-14 20H14"/></g>' % colour
-    )
-
-
-def headset(colour):
-    return (
-        '<g fill="none" stroke="%s" stroke-width="3" stroke-linejoin="miter">'
-        '<path d="M-46 8V-12A46 46 0 0 1 46 -12V8"/>'
-        '<path d="M-58 8H-34V56H-58Z"/><path d="M34 8H58V56H34Z"/>'
-        '<path d="M-46 56V70H-6"/></g>' % colour
-    )
-
-
-def feed():
-    w, h = 1000, 400
-    cycle = 20.0
-    css = BASE_CSS + (
-        "@keyframes c{0%{opacity:0}.1%{opacity:1}60%{opacity:0}100%{opacity:0}}"
-        ".c{animation:c 20s steps(1) infinite both}"
-        "@keyframes wa{0%{opacity:1}48%{opacity:0}100%{opacity:0}}"
-        "@keyframes wb{0%{opacity:0}50%{opacity:1}98%{opacity:0}100%{opacity:0}}"
-        ".wa{animation:wa 20s steps(1) infinite}.wb{animation:wb 20s steps(1) infinite}"
-        "@keyframes stamp{0%{opacity:0;transform:scale(1.9) rotate(-6deg)}"
-        "1.4%{opacity:1;transform:scale(1) rotate(-6deg)}58%{opacity:1;transform:scale(1) rotate(-6deg)}"
-        "60%{opacity:0;transform:scale(1) rotate(-6deg)}100%{opacity:0;transform:scale(1) rotate(-6deg)}}"
-        ".stamp{animation:stamp 20s ease-out infinite both;transform-box:fill-box;transform-origin:center;"
-        "transform:rotate(-6deg)}"
-        "@keyframes sweep{to{transform:translateY(560px)}}"
-        ".sweep{animation:sweep 7s linear infinite}"
-    ) + STILL_CSS
-
-    frame = [0, 0, w - 26, 0, w, 26, w, h, 26, h, 0, h - 26]
-    o = [svg_open(
-        w, h, "What LOTUS Guard does when a device is plugged in",
-        "A replay in two parts. An unknown SanDisk flash drive is plugged in while removable storage is set "
-        "to block, and LOTUS switches it off. A HyperX headset whose model is on the trusted list is plugged "
-        "in while USB devices are set to trusted only, and it keeps working.")]
-    o.append("<defs>%s%s%s" % (hazard_pattern(), grid_pattern(), SCAN_DEFS))
-    o.append('<clipPath id="frame"><polygon points="%s"/></clipPath>' % points(frame))
-    o.append("</defs><style>%s</style>" % css)
-    o.append('<g clip-path="url(#frame)">')
-    o.append('<rect width="%d" height="%d" fill="%s"/>' % (w, h, INK))
-    o.append('<rect y="46" width="%d" height="%d" fill="url(#grid)"/>' % (w, h - 46))
-
-    # Title bar.
-    o.append('<rect width="%d" height="46" fill="%s"/>' % (w, PANEL))
-    o.append('<polygon points="0,0 196,0 180,46 0,46" fill="%s"/>' % CYAN)
-    o.append(
-        '<text x="24" y="31" class="cond" font-size="22" fill="%s" textLength="132" '
-        'lengthAdjust="spacingAndGlyphs">LOTUS GUARD</text>' % INK
-    )
-    o.append(mono(216, 29, "//  WHAT HAPPENS WHEN A DEVICE IS PLUGGED IN", 13, DIM))
-    o.append('<rect class="pulse" x="882" y="18" width="10" height="10" fill="%s"/>' % PINK)
-    o.append(mono(902, 29, "REPLAY", 13, TEXT))
-    o.append('<path d="M0 46H%d" stroke="%s"/>' % (w, LINE))
-
-    # The device card on the right.
-    o.append('<rect x="700" y="74" width="268" height="292" fill="%s" stroke="%s"/>' % (PANEL, LINE))
-    o.append('<rect x="700" y="74" width="268" height="4" fill="%s"/>' % LINE)
-    o.append(mono(720, 106, "//  DEVICE", 12, DIM))
-
-    scenes = [
-        {
-            "window": "wa", "offset": 0.0, "icon": usb_stick, "accent": PINK,
-            "name": "SANDISK CRUZER BLADE", "kind": "REMOVABLE STORAGE", "stamp": "BLOCKED",
-            "prompt": "a USB flash drive is plugged in",
-            "rows": [
-                ("FOUND", "SanDisk Cruzer Blade USB Device", TEXT),
-                ("ID", "USB\\VID_0781&PID_5567\\4C530001230505116353", TEXT),
-                ("KIND", "storage, from USB class 08", TEXT),
-                ("POLICY", "removable storage is set to block", TEXT),
-                ("TRUSTED", "no", PINK),
-                ("ACTION", "switch it off and keep it off after a replug", TEXT),
-            ],
-            "result": "Blocked because removable storage is blocked",
-            "result2": "and this device is not trusted.",
-        },
-        {
-            "window": "wb", "offset": 10.0, "icon": headset, "accent": GREEN,
-            "name": "HYPERX CLOUD III WIRELESS", "kind": "AUDIO + INPUT", "stamp": "ALLOWED",
-            "prompt": "a USB headset is plugged in",
-            "rows": [
-                ("FOUND", "HyperX Cloud III Wireless", TEXT),
-                ("ID", "USB\\VID_03F0&PID_0C9D\\0000000000000000", TEXT),
-                ("KIND", "audio and input, from USB classes 01 and 03", TEXT),
-                ("POLICY", "USB devices are set to trusted only", TEXT),
-                ("TRUSTED", "yes, the whole model VID_03F0&PID_0C9D", GREEN),
-                ("ACTION", "none", TEXT),
-            ],
-            "result": "Trusted. Every device of this model is allowed.",
-            "result2": "",
-        },
-    ]
-
-    size = 14
-    cell = size * 0.6
-    for index, scene in enumerate(scenes):
-        base = scene["offset"]
-        hidden = ' opacity="0"' if index else ""
-        o.append('<g class="%s"%s>' % (scene["window"], hidden))
-
-        # Left column: the log.
-        y = 92
-        o.append(mono(32, y, ">", size, CYAN))
-        markup, end = typed(32 + 2 * cell, y, scene["prompt"], size, base + 0.4, 0.03, CYAN, "c")
-        o.append(markup)
-        t = end + 0.5
-        for number, (label, value, colour) in enumerate(scene["rows"], start=1):
-            y += 31
-            line_start = t
-            markup, end = typed(32, y, "%02d" % number, size, line_start, 0.0, DIM, "c")
-            o.append(markup)
-            markup, end = typed(32 + 4 * cell, y, label, size, line_start, 0.0, YELLOW, "c")
-            o.append(markup)
-            markup, end = typed(32 + 13 * cell, y, value, size, line_start + 0.12, 0.014, colour, "c")
-            o.append(markup)
-            t = end + 0.3
-        y += 40
-        result_at = t + 0.2
-        o.append(
-            '<rect class="c" style="animation-delay:%.2fs" x="32" y="%d" width="4" height="%d" fill="%s"/>'
-            % (result_at, y - 15, 44 if scene["result2"] else 20, scene["accent"])
-        )
-        markup, end = typed(32 + 2 * cell, y, scene["result"], size, result_at, 0.012, scene["accent"], "c")
-        o.append(markup)
-        if scene["result2"]:
-            markup, end = typed(32 + 2 * cell, y + 24, scene["result2"], size, end, 0.012, scene["accent"], "c")
-            o.append(markup)
-
-        # Right column: the device, and the verdict stamped across it.
-        o.append('<g transform="translate(834 206)">%s</g>' % scene["icon"](CYAN))
-        o.append(
-            '<g class="c" style="animation-delay:%.2fs" transform="translate(834 206)">%s</g>'
-            % (result_at, scene["icon"](scene["accent"]))
-        )
-        o.append(mono(834, 312, scene["name"], 13, TEXT, "middle"))
-        o.append(mono(834, 334, scene["kind"], 12, DIM, "middle"))
-        o.append('<g class="stamp" style="animation-delay:%.2fs">' % result_at)
-        o.append('<polygon points="744,186 936,186 924,232 732,232" fill="%s"/>' % scene["accent"])
-        o.append(
-            '<text x="834" y="220" class="cond" font-size="32" fill="%s" text-anchor="middle" '
-            'textLength="130" lengthAdjust="spacingAndGlyphs">%s</text>' % (INK, scene["stamp"])
-        )
-        o.append("</g>")
-        o.append("</g>")
-        assert result_at - base < 8.5, "scene %d runs past its window" % index
-        assert result_at < cycle
-
-    o.append(hazard_strip(0, h - 8, 300, 8, "fz"))
-    o.append(scanlines(w, h))
-    o.append('<polygon points="%s" fill="none" stroke="%s" stroke-width="2"/>' % (points(frame), LINE))
+    o.append('<path d="M0 5H1200" stroke="%s" stroke-width="2"/>' % LINE)
+    o.append(hazard_strip(0, 0, 150, 10))
+    o.append(hazard_strip(1050, 0, 150, 10))
     o.append("</g></svg>")
     return "".join(o)
 
@@ -542,10 +292,10 @@ def feed():
 
 
 def flow():
-    w, h = 1000, 440
-    rail = 222
-    up = 78
-    down = 356
+    w, h = 1000, 410
+    rail = 208
+    up = 64
+    down = 342
     centres = [200, 350, 500, 650, 800]
     checks = [
         ("01", "LOTUS IS", "DISARMED?", True),
@@ -554,12 +304,6 @@ def flow():
         ("04", "HAS STORAGE,", "SET TO BLOCK?", False),
         ("05", "ANYTHING ELSE,", "TRUSTED ONLY?", False),
     ]
-    css = BASE_CSS + (
-        "@keyframes dash{to{stroke-dashoffset:-24}}"
-        ".flowline{stroke-dasharray:4 8;animation:dash 1.2s linear infinite}"
-        "@keyframes lamp{0%,100%{opacity:.35}50%{opacity:1}}"
-        ".lamp{animation:lamp 2s ease-in-out infinite}"
-    ) + STILL_CSS
 
     frame = [0, 0, w - 26, 0, w, 26, w, h, 26, h, 0, h - 26]
     o = [svg_open(
@@ -568,46 +312,25 @@ def flow():
         "from the device, or if the device is on the trusted list, it is allowed. If it has storage and storage "
         "is set to block, or if it does anything else and USB devices are set to trusted only, it is blocked. "
         "A device that no check stops is allowed.")]
-    o.append("<defs>%s%s%s" % (hazard_pattern(), grid_pattern(), SCAN_DEFS))
+    o.append("<defs>%s%s" % (grid_pattern(), SCAN_DEFS))
     o.append('<clipPath id="frame"><polygon points="%s"/></clipPath>' % points(frame))
-    o.append('<filter id="glow" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="4"/></filter>')
-    o.append("</defs><style>%s</style>" % css)
+    o.append("</defs><style>%s</style>" % BASE_CSS)
     o.append('<g clip-path="url(#frame)">')
     o.append('<rect width="%d" height="%d" fill="%s"/>' % (w, h, INK))
     o.append('<rect width="%d" height="%d" fill="url(#grid)"/>' % (w, h))
     o.append(mono(28, 34, "//  THE DECISION, IN ORDER", 13, DIM))
 
-    # Lines: the rail, the way up to "allow" and the way down to "block".
-    o.append('<path d="M112 %d H927 V104" fill="none" stroke="%s" stroke-width="2"/>' % (rail, LINE))
+    # Lines: the rail, the way up to "allowed" and the way down to "blocked".
+    o.append('<path d="M112 %d H927 V%d" fill="none" stroke="%s" stroke-width="2"/>' % (rail, up + 26, CYAN))
     for (number, a, b, allow), cx in zip(checks, centres):
-        if allow:
-            o.append('<path class="flowline" d="M%d %d V%d H870" fill="none" stroke="%s" stroke-width="2"/>'
-                     % (cx, rail, up, GREEN))
-        else:
-            o.append('<path class="flowline" d="M%d %d V%d H870" fill="none" stroke="%s" stroke-width="2"/>'
-                     % (cx, rail, down, PINK))
-    o.append('<path class="flowline" d="M112 %d H927 V104" fill="none" stroke="%s" stroke-width="2" opacity=".55"/>'
-             % (rail, CYAN))
-
-    # Three devices travelling through the checks.
-    trips = [
-        # A negative start time puts all three on the rail from the first frame.
-        (GREEN, "M112 %d H500 V%d H870" % (rail, up), "0s"),
-        (PINK, "M112 %d H650 V%d H870" % (rail, down), "-4.8s"),
-        (CYAN, "M112 %d H927 V104" % rail, "-2.4s"),
-    ]
-    for colour, path, begin in trips:
-        for radius, extra in ((9, ' filter="url(#glow)" opacity=".9"'), (5, "")):
-            o.append(
-                '<circle r="%d" fill="%s"%s><animateMotion dur="7.2s" begin="%s" repeatCount="indefinite" '
-                'path="%s" calcMode="linear"/></circle>' % (radius, colour, extra, begin, path)
-            )
+        o.append('<path d="M%d %d V%d H870" fill="none" stroke="%s" stroke-width="2" stroke-dasharray="4 8"/>'
+                 % (cx, rail, up if allow else down, GREEN if allow else PINK))
 
     # The device on the left.
-    o.append('<polygon points="22,196 112,196 112,248 34,248 22,236" fill="%s" stroke="%s" stroke-width="2"/>'
-             % (PANEL2, CYAN))
-    o.append(mono(67, 219, "DEVICE ON", 12, TEXT, "middle"))
-    o.append(mono(67, 236, "A USB PORT", 12, TEXT, "middle"))
+    o.append('<polygon points="22,%d 112,%d 112,%d 34,%d 22,%d" fill="%s" stroke="%s" stroke-width="2"/>'
+             % (rail - 26, rail - 26, rail + 26, rail + 26, rail + 14, PANEL2, CYAN))
+    o.append(mono(67, rail - 3, "DEVICE ON", 12, TEXT, "middle"))
+    o.append(mono(67, rail + 14, "A USB PORT", 12, TEXT, "middle"))
 
     # The five checks.
     for (number, a, b, allow), cx in zip(checks, centres):
@@ -630,28 +353,18 @@ def flow():
     o.append(mono(895, rail - 8, "NO", 12, DIM, "middle"))
 
     # Where a device ends up.
-    o.append('<polygon points="870,52 985,52 985,104 882,104 870,92" fill="%s"/>' % GREEN)
-    o.append('<text x="927" y="79" class="cond" font-size="22" fill="%s" text-anchor="middle" '
-             'textLength="76" lengthAdjust="spacingAndGlyphs">ALLOWED</text>' % INK)
-    o.append(mono(927, 96, "IT WORKS", 11, INK, "middle"))
-    o.append('<polygon points="870,330 985,330 985,382 882,382 870,370" fill="%s"/>' % PINK)
-    o.append('<text x="927" y="357" class="cond" font-size="22" fill="%s" text-anchor="middle" '
-             'textLength="76" lengthAdjust="spacingAndGlyphs">BLOCKED</text>' % INK)
-    o.append(mono(927, 374, "SWITCHED OFF", 11, INK, "middle"))
+    o.append('<polygon points="870,%d 985,%d 985,%d 882,%d 870,%d" fill="%s"/>'
+             % (up - 26, up - 26, up + 26, up + 26, up + 14, GREEN))
+    o.append('<text x="927" y="%d" class="cond" font-size="22" fill="%s" text-anchor="middle" '
+             'textLength="76" lengthAdjust="spacingAndGlyphs">ALLOWED</text>' % (up + 1, INK))
+    o.append(mono(927, up + 18, "IT WORKS", 11, INK, "middle"))
+    o.append('<polygon points="870,%d 985,%d 985,%d 882,%d 870,%d" fill="%s"/>'
+             % (down - 26, down - 26, down + 26, down + 26, down + 14, PINK))
+    o.append('<text x="927" y="%d" class="cond" font-size="22" fill="%s" text-anchor="middle" '
+             'textLength="76" lengthAdjust="spacingAndGlyphs">BLOCKED</text>' % (down + 1, INK))
+    o.append(mono(927, down + 18, "SWITCHED OFF", 11, INK, "middle"))
 
-    # What the three moving dots stand for.
-    legend = [
-        (GREEN, "a headset on the trusted list"),
-        (PINK, "an unknown flash drive"),
-        (CYAN, "a device no check stops"),
-    ]
-    x = 28
-    for colour, label in legend:
-        o.append('<rect class="lamp" x="%d" y="%d" width="9" height="9" fill="%s"/>' % (x, h - 31, colour))
-        o.append(mono(x + 17, h - 22, label, 13, DIM))
-        x += 17 + len(label) * 7.8 + 34
-
-    o.append(scanlines(w, h).split("<rect class")[0])
+    o.append(scanlines(w, h))
     o.append('<polygon points="%s" fill="none" stroke="%s" stroke-width="2"/>' % (points(frame), LINE))
     o.append("</g></svg>")
     return "".join(o)
@@ -670,7 +383,6 @@ def main():
     files = {
         "banner.svg": banner(),
         "divider.svg": divider(),
-        "guard-feed.svg": feed(),
         "decision-flow.svg": flow(),
     }
     for name, content in files.items():

@@ -6,18 +6,17 @@ It needs Windows, Pillow and ffmpeg:
     python tools/make-demo.py build\\shots
 
 The first command makes LOTUS draw its own pages in demo mode. This script puts
-a caption under each page, adds a short glitch between pages and hands the
-frames to ffmpeg, which writes the GIF.
+a caption under each page and hands the frames to ffmpeg, which writes the GIF.
+Each page is held for a few seconds and the next one simply replaces it.
 """
 
 import os
-import random
 import shutil
 import subprocess
 import sys
 import tempfile
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 INK = (8, 8, 12)
 PANEL = (17, 17, 24)
@@ -38,8 +37,7 @@ STEPS = [
 ]
 
 CAPTION_HEIGHT = 64
-HOLD_SECONDS = 2.8
-GLITCH_SECONDS = 0.08
+HOLD_SECONDS = 4.0
 
 
 def font(name, size, variation=None):
@@ -82,22 +80,6 @@ def compose(page, number, caption, total):
     return frame
 
 
-def glitch(frame, rng, strength):
-    """Shifts a few horizontal bands sideways and pulls the red and blue channels apart."""
-    width, height = frame.size
-    red, green, blue = frame.split()
-    red = ImageChops.offset(red, int(6 * strength), 0)
-    blue = ImageChops.offset(blue, -int(6 * strength), 0)
-    out = Image.merge("RGB", (red, green, blue))
-    for _ in range(int(5 + 6 * strength)):
-        band_height = rng.randint(8, 46)
-        y = rng.randint(0, height - band_height)
-        shift = rng.randint(-int(70 * strength), int(70 * strength))
-        band = out.crop((0, y, width, y + band_height))
-        out.paste(ImageChops.offset(band, shift, 0), (0, y))
-    return out
-
-
 def main():
     if len(sys.argv) < 2:
         sys.exit("usage: python tools/make-demo.py <folder with the --shots pictures> [output.gif]")
@@ -107,7 +89,6 @@ def main():
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg was not found on the PATH")
 
-    rng = random.Random(2016)
     pages = []
     for number, (name, caption) in enumerate(STEPS, start=1):
         page = Image.open(os.path.join(shots, name))
@@ -122,11 +103,8 @@ def main():
             image.save(path)
             entries.append((path, seconds))
 
-        for index, page in enumerate(pages):
+        for page in pages:
             add(page, HOLD_SECONDS)
-            following = pages[(index + 1) % len(pages)]
-            add(glitch(Image.blend(page, following, 0.5), rng, 1.0), GLITCH_SECONDS)
-            add(glitch(following, rng, 0.5), GLITCH_SECONDS)
 
         listing = os.path.join(work, "frames.txt")
         with open(listing, "w", encoding="utf-8") as handle:
