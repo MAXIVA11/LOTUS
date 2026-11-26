@@ -23,7 +23,7 @@ namespace Lotus.Guard
                     ServiceBase.Run(new GuardService());
                     return 0;
                 case "--console":
-                    return RunConsole();
+                    return RunConsole(args.Length >= 3 && args[1].ToLowerInvariant() == "--dev" ? args[2] : null);
                 case "--scan":
                     return Scan();
                 case "--release-all":
@@ -41,17 +41,33 @@ namespace Lotus.Guard
             Console.WriteLine();
             Console.WriteLine("  LotusGuard --scan          List USB devices and what the current policy says about each.");
             Console.WriteLine("  LotusGuard --console       Enforce the policy from this window until you press Enter.");
+            Console.WriteLine("  LotusGuard --console --dev <folder>");
+            Console.WriteLine("                             For developers: keep all data in <folder> and listen on a");
+            Console.WriteLine("                             separate pipe. Leaves the installed LOTUS alone.");
             Console.WriteLine("  LotusGuard --release-all   Switch every blocked device back on and lift read-only mode.");
             Console.WriteLine("                             Asks for the LOTUS password when one is set.");
         }
 
-        private static int RunConsole()
+        private static int RunConsole(string devFolder)
         {
-            using (var worker = new GuardWorker())
+            var options = new GuardOptions();
+            if (devFolder != null)
             {
+                // A second guard for trying things out. It has its own data folder and
+                // its own pipe, so it cannot be mistaken for the service or disturb it.
+                LotusPaths.OverrideDataDir(devFolder);
+                options.PipeName = GuardProtocol.DevPipeName;
+                options.AdministratorsOnly = false;
+                options.HardenFolders = false;
+            }
+            using (var worker = new GuardWorker(options))
+            using (var stopped = new ManualResetEvent(false))
+            {
+                worker.StopRequested += purpose => stopped.Set();
                 worker.Start();
                 Console.WriteLine("LOTUS Guard is enforcing the policy. Press Enter to stop.");
-                Console.ReadLine();
+                if (Console.IsInputRedirected) stopped.WaitOne();
+                else Console.ReadLine();
                 worker.Stop();
             }
             return 0;

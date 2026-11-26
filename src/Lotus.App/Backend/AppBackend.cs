@@ -67,7 +67,17 @@ namespace Lotus.App.Backend
         private readonly ActivityLog log = new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile);
         private readonly WindowsDeviceBackend devices = new WindowsDeviceBackend();
         private readonly RegistryReadOnlyPolicy readOnly = new RegistryReadOnlyPolicy();
-        private readonly GuardClient guard = new GuardClient();
+        private readonly GuardClient guard;
+
+        public RealBackend() : this(new GuardClient())
+        {
+        }
+
+        /// <param name="guard">Developers point this at a guard started with --console --dev.</param>
+        public RealBackend(GuardClient guard)
+        {
+            this.guard = guard;
+        }
 
         public bool IsDemo => false;
         public string LogFolder => LotusPaths.DataDir;

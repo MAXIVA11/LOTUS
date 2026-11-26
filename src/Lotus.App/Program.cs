@@ -21,6 +21,12 @@ namespace Lotus.App
         private const string MainMutex = @"Local\LOTUS.MainWindow";
         private const string ActivateEvent = @"Local\LOTUS.Activate";
         private const string TrayMutex = @"Local\LOTUS.Tray";
+        private static GuardClient devGuard;
+
+        private static RealBackend CreateBackend()
+        {
+            return devGuard != null ? new RealBackend(devGuard) : new RealBackend();
+        }
 
         [STAThread]
         public static int Main(string[] args)
@@ -32,6 +38,12 @@ namespace Lotus.App
                 if (args[i].Equals("--shots", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
                 {
                     shotDir = args[++i];
+                }
+                else if (args[i].Equals("--dev", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    // For developers: talk to a guard started with "LotusGuard --console --dev <folder>".
+                    LotusPaths.OverrideDataDir(args[++i]);
+                    devGuard = new GuardClient(GuardProtocol.DevPipeName, false);
                 }
                 else
                 {
@@ -68,6 +80,11 @@ namespace Lotus.App
 
         private static int RunMain(string[] args)
         {
+            if (devGuard != null)
+            {
+                Application devApp = CreateApp(ShutdownMode.OnMainWindowClose);
+                return devApp.Run(new MainWindow(CreateBackend()));
+            }
             if (!IsAdministrator())
             {
                 // Changing the policy needs administrator rights. Ask Windows for them
@@ -288,7 +305,7 @@ namespace Lotus.App
             Directory.CreateDirectory(directory);
             GlitchText.AnimationsEnabled = false;
             Application app = CreateApp(ShutdownMode.OnExplicitShutdown);
-            var window = new MainWindow(new RealBackend()) { ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = 40, Top = 40 };
+            var window = new MainWindow(CreateBackend()) { ShowActivated = false, WindowStartupLocation = WindowStartupLocation.Manual, Left = 40, Top = 40 };
             window.Show();
             foreach (string page in new[] { "control", "devices" })
             {

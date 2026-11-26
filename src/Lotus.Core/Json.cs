@@ -340,6 +340,12 @@ namespace Lotus.Core
             return time.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
         }
 
+        /// <summary>The same with milliseconds, for the activity log, where the order of events matters.</summary>
+        public static string FormatTimePrecise(DateTime time)
+        {
+            return time.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+        }
+
         public static DateTime ParseTime(string text, DateTime fallback)
         {
             if (!string.IsNullOrEmpty(text) &&

@@ -37,7 +37,7 @@ namespace Lotus.Core
         {
             var obj = new Dictionary<string, object>
             {
-                ["t"] = Json.FormatTime(TimeUtc),
+                ["t"] = Json.FormatTimePrecise(TimeUtc),
                 ["type"] = Type ?? "",
                 ["msg"] = Message ?? ""
             };

@@ -13,16 +13,16 @@
   <a href="#your-first-policy">First policy</a> ·
   <a href="#how-blocking-works">How it works</a> ·
   <a href="#limits">Limits</a> ·
-  <a href="#the-policy-file">Policy file</a> ·
+  <a href="#protection">Protection</a> ·
   <a href="#build-from-source">Build</a>
 </p>
 
-LOTUS decides which USB devices are allowed to work on a Windows PC. You pick a policy in the app, a Windows service enforces it, and nothing ever leaves the machine: there is no server, no account and no telemetry.
+LOTUS decides which USB devices are allowed to work on a Windows PC. You pick a policy in the app and a Windows service enforces it.
 
 It controls two things: removable storage, and every other plug and play (PnP) device on a USB port.
 
 <p align="center">
-  <img src="docs/images/demo.gif" width="100%" alt="A walkthrough of the LOTUS app in seven steps: it starts disarmed, you choose the rules and turn the master switch on, Apply lists what would be switched off, the status changes to armed, the device list shows three blocked devices, the trusted list shows one device, and the activity log lists each block.">
+  <img src="docs/images/demo.gif" width="100%" alt="A walkthrough of the LOTUS app in eight steps: it starts disarmed, you choose the rules and turn the master switch on, Apply lists what would be switched off, you choose a password, the status changes to armed, the device list shows three blocked devices, the trusted list shows one device, and the activity log lists each block.">
 </p>
 
 <p align="center"><sub>The app itself, recorded in demo mode with simulated devices.</sub></p>
@@ -42,6 +42,7 @@ A device you trust as "this device" is matched by its serial number. A device yo
 - Setup blocks nothing. LOTUS stays disarmed until you choose a policy and switch it on.
 - Before a policy is applied, LOTUS lists the connected devices it would switch off.
 - A blocked device stays off after it is replugged, after a restart, and while the service is stopped.
+- The policy sits in a sealed store behind a LOTUS password. Editing the file, stopping the service or removing LOTUS without the password does not work.
 - An activity log records every block and release, and a small notifier next to the clock tells whoever is at the PC why the thing they just plugged in does nothing.
 
 <img src="docs/assets/divider.svg" width="100%" alt="">
@@ -54,6 +55,9 @@ A device you trust as "this device" is matched by its serial number. A device yo
 
 > [!NOTE]
 > Nothing is blocked after installation. LOTUS stays disarmed until you choose a policy and switch it on.
+
+> [!IMPORTANT]
+> This page describes version 1.1, which is on the main branch and has not been released yet. The download on the releases page is 1.0.0, which has no password, no sealed policy store and slower blocking. To try 1.1 now, [build it from source](#build-from-source).
 
 The setup file is not code signed, so Windows SmartScreen may show "Windows protected your PC" the first time. Choose More info, then Run anyway. Each release lists the file's SHA-256 hash so you can check your download.
 
@@ -69,6 +73,7 @@ LOTUS runs on Windows 10 (version 1607 or newer) and Windows 11. It uses the .NE
 2. Under Removable storage, choose Allow, Read-only or Block.
 3. Under PnP devices, choose Allow or Trusted only.
 4. Turn the master switch on and press <kbd>Apply</kbd>.
+5. The first time you arm LOTUS it asks you to choose a password. Every later change asks for it.
 
 Before anything changes, LOTUS shows which connected devices the new policy would switch off. If you chose Trusted only, it offers to put the devices that are connected right now on the trusted list, so your own headset and adapters keep working.
 
@@ -97,7 +102,7 @@ Whoever is at the PC sees this when a device is blocked:
 
 ## How blocking works
 
-LOTUS Guard is a Windows service that runs as SYSTEM. Windows tells it the moment a device appears on a USB port. The service reads what the device says it is from its USB class codes, checks that against the policy, and switches a blocked device off with the same Windows call Device Manager uses for "Disable device".
+LOTUS Guard is a Windows service that runs as SYSTEM. Windows tells it the moment a device appears on a USB port, before the device's driver has started. The service reads what the device is from the device's own descriptors, checks that against the policy, and switches a blocked device off with the same Windows call Device Manager uses for "Disable device".
 
 <p align="center">
   <img src="docs/assets/decision-flow.svg" width="100%" alt="A device on a USB port passes five checks from left to right. If LOTUS is disarmed, if Windows boots from the device, or if the device is on the trusted list, it is allowed. If it has storage and storage is set to block, or if it does anything else and USB devices are set to trusted only, it is blocked. A device that no check stops is allowed.">
@@ -105,9 +110,13 @@ LOTUS Guard is a Windows service that runs as SYSTEM. Windows tells it the momen
 
 Check 05 has two exceptions. A device that Windows reports as built into the computer, such as a laptop webcam, is allowed. So is a device whose only other function is input, as long as "Keep keyboards and mice working" is on.
 
-The disabled state belongs to that device, and Windows remembers it. A blocked drive stays off when it is unplugged and plugged back in, after a restart, and while the service is stopped. Windows refuses to disable a keyboard while its driver is running, so LOTUS first removes the keyboard from the running system and then disables it.
+The disabled state belongs to that device, and Windows remembers it. A blocked drive stays off when it is unplugged and plugged back in, after a restart, and while the service is stopped. Devices this PC has seen before, and that the policy blocks, are marked as disabled while they are unplugged, so they are already off when they come back.
+
+Sometimes Windows refuses to stop a device because a program has it open, typically Explorer reading a drive that was just plugged in. LOTUS then takes the device off the bus by resetting its USB port, which no program can refuse.
 
 LOTUS keeps a ledger of every device it switched off and only ever re-enables devices on that ledger. A device you disabled yourself in Device Manager stays disabled.
+
+A trusted device is remembered together with what it does. If a trusted headset comes back presenting a keyboard or a disk as well, it is no longer treated as trusted.
 
 Read-only mode works differently. It sets the "Removable Storage Access" policy that is built into Windows, so the storage stack itself refuses the write. LOTUS restarts connected drives for a moment so the change reaches them.
 
@@ -115,42 +124,24 @@ The full description is in [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Limits
 
-- A device Windows has never seen can be active for a moment before it is switched off, usually well under a second. After that first time it comes back already disabled.
-- Anyone with administrator rights on the PC can change the policy or stop the service. LOTUS guards against people and devices without those rights.
+- Trust is based on what a device reports about itself. A device built to copy the vendor, product, serial number and functions of a trusted device is treated as that device.
+- With "Keep keyboards and mice working" on, any device that is only a keyboard or mouse works, including one that types on its own.
+- The password and the sealed store stop casual and accidental changes. Someone with administrator rights who is determined to remove LOTUS, for example from Safe Mode, can still do so.
 - LOTUS covers USB ports. It does not manage Bluetooth pairing, Thunderbolt docks, SATA ports or network shares.
 - Read-only mode applies to every removable drive, trusted ones included, because Windows applies it to the whole class of device. It also covers CD and DVD writers.
 - The disk Windows boots from is never blocked, even when it is a USB disk.
-- Read-only mode has been checked up to the point where the Windows policy is written and removed. It has not yet been tried with a physical drive on the development PC. If it does not hold on your edition of Windows, please open an issue.
+- LOTUS cannot recover a lost password. [docs/security.md](docs/security.md) describes how an administrator removes LOTUS by hand in that case.
 
-## The policy file
+## Protection
 
-The policy is one small JSON file, `C:\ProgramData\LOTUS\policy.json`. Administrators can edit it by hand or copy it to other PCs. The service picks up a change within two seconds.
+The policy is kept in a sealed store, `C:\ProgramData\LOTUS\secure\policy.dat`. Only LOTUS Guard can write it, and it carries a keyed checksum made with a key only the service can read.
 
-```json
-{
-  "version": 1,
-  "armed": true,
-  "storage": "block",
-  "pnp": "block",
-  "allowInput": true,
-  "trusted": [
-    {
-      "kind": "device",
-      "id": "USB\\VID_0781&PID_5567\\4C530001230505116353",
-      "name": "SanDisk Cruzer Blade USB Device",
-      "added": "2026-11-26T19:40:00Z"
-    },
-    {
-      "kind": "model",
-      "id": "VID_046D&PID_C542",
-      "name": "Wireless Receiver",
-      "added": "2026-11-26T19:40:00Z"
-    }
-  ]
-}
-```
+- The app does not write the policy. It sends each change to LOTUS Guard, which checks the LOTUS password first.
+- If someone edits or deletes the store, LOTUS Guard puts its own copy back and writes a "tampering" line to the activity log.
+- The service cannot be stopped, reconfigured or deleted with the Windows tools. If its process is killed, Windows starts it again after a second, and blocked devices stay blocked in the meantime.
+- Updating and removing LOTUS ask for the password as well.
 
-`storage` is `allow`, `readonly` or `block`. `pnp` is `allow` or `block`. If the file is damaged, the service keeps the last policy it loaded and writes the reason to the activity log.
+[docs/security.md](docs/security.md) has the details, the results of the security review of 1.0, and what LOTUS cannot protect against.
 
 ## Try it without installing
 
@@ -162,12 +153,12 @@ With "Keep keyboards and mice working" turned off, an untrusted keyboard or mous
 
 1. Start Windows in Safe Mode. LOTUS Guard does not run there.
 2. Use a keyboard LOTUS has not blocked. For most keyboards a different USB port is enough, because a keyboard without a serial number counts as a new device in each port.
-3. Open an administrator command prompt and run `"C:\Program Files\LOTUS\LotusGuard.exe" --release-all`. This switches every blocked device back on.
-4. Open LOTUS and fix the policy, or delete `C:\ProgramData\LOTUS\policy.json` to start again disarmed.
+3. Open an administrator command prompt and run `"C:\Program Files\LOTUS\LotusGuard.exe" --release-all`. It asks for the LOTUS password and then switches every blocked device back on.
+4. Restart, open LOTUS and fix the policy.
 
 ## Uninstall
 
-Use "Installed apps" in Windows Settings, or run `"C:\Program Files\LOTUS\Uninstall.exe"`. The uninstaller switches every blocked device back on, lifts read-only mode, and removes the service, the program files, the policy and the log.
+Use "Installed apps" in Windows Settings, or run `"C:\Program Files\LOTUS\Uninstall.exe"`. The uninstaller asks for the LOTUS password, switches every blocked device back on, lifts read-only mode, and removes the service, the program files, the policy and the log.
 
 <img src="docs/assets/divider.svg" width="100%" alt="">
 
@@ -191,16 +182,16 @@ The result is `dist\LOTUS-Setup.exe`. The script builds the app and the service,
 | `src/Lotus.Guard` | `LotusGuard.exe`, the Windows service |
 | `src/Lotus.App` | `LOTUS.exe`, the app and the notifier |
 | `src/Lotus.Setup` | `LOTUS-Setup.exe`, the installer and uninstaller |
-| `tests/Lotus.Tests` | Unit tests for the engine and the enforcement loop |
+| `tests/Lotus.Tests` | Unit tests for the engine, the enforcement loop, the sealed store and the control pipe |
 | `tests/Lotus.Probe` | A small developer tool that runs single device calls, used by the hardware scripts |
 | `tests/hardware` | Scripts that test device control and a full install on real hardware |
 | `tools` | Scripts that draw the icon, the artwork on this page and the walkthrough animation |
 
 ## Tests
 
-`dotnet test tests\Lotus.Tests` runs the unit tests. They cover the policy engine and run the enforcement loop against a simulated USB bus that behaves the way Windows was observed to behave.
+`dotnet test tests\Lotus.Tests` runs the unit tests. They cover the policy engine, the sealed store and the password rules, and they run the real service loop against a simulated USB bus and talk to it over a real pipe.
 
-The scripts in `tests\hardware` need an administrator prompt and real devices. `probe-block.ps1` blocks and unblocks single devices. `e2e-install.ps1` installs LOTUS with the real setup, arms a policy, checks that one chosen device is blocked and released, restarts the service, switches read-only mode on and off, and uninstalls again. It then installs, updates and removes LOTUS a second time by pressing the buttons of the setup window. Read the comments at the top of each script before running it.
+The scripts in `tests\hardware` need an administrator prompt and real devices. `e2e-install.ps1` updates whatever LOTUS is installed, installs fresh, and then checks on real hardware that one chosen device is blocked and released, how quickly a device Windows has never seen is switched off, that the password guards every change, that the service resists being stopped and that an edited policy store is put back. It ends by removing LOTUS with the password and through the setup window. Read the comments at the top of each script before running it.
 
 ## About the look
 
