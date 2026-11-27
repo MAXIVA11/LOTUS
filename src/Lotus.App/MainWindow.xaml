@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:Lotus.Ui"
-        Title="LOTUS" Width="1140" Height="760" MinWidth="1000" MinHeight="680"
+        Title="LOTUS" Width="1140" Height="830" MinWidth="1000" MinHeight="750"
         Background="{StaticResource B.Ink}" Foreground="{StaticResource B.Text}"
         WindowStartupLocation="CenterScreen" UseLayoutRounding="True" SnapsToDevicePixels="True"
         Icon="pack://application:,,,/Assets/lotus.ico">
@@ -216,6 +216,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
@@ -364,8 +365,25 @@
                             </Border>
                         </Grid>
 
+                        <!-- strict mode -->
+                        <Border Grid.Row="3" Style="{StaticResource Card}" Margin="0,16,0,0" Padding="22,12,22,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <CheckBox x:Name="StrictCheck" Style="{StaticResource Check}" VerticalAlignment="Center"
+                                          IsChecked="{Binding DraftStrict}"
+                                          IsEnabled="{Binding StrictOptionEnabled}">
+                                    <TextBlock Text="Refuse new devices before they start" />
+                                </CheckBox>
+                                <TextBlock Grid.Column="1" Style="{StaticResource T.Dim}" Margin="20,0,0,0"
+                                           VerticalAlignment="Center" TextWrapping="Wrap" Text="{Binding StrictHint}" />
+                            </Grid>
+                        </Border>
+
                         <!-- latest activity -->
-                        <Border Grid.Row="3" Style="{StaticResource Card}" Margin="0,16,0,16" Padding="22,14,10,10">
+                        <Border Grid.Row="4" Style="{StaticResource Card}" Margin="0,16,0,16" Padding="22,14,10,10">
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -405,7 +423,7 @@
                         </Border>
 
                         <!-- unapplied changes -->
-                        <Border Grid.Row="4" Background="{StaticResource B.Panel}" BorderBrush="{StaticResource B.Yellow}"
+                        <Border Grid.Row="5" Background="{StaticResource B.Panel}" BorderBrush="{StaticResource B.Yellow}"
                                 BorderThickness="1">
                             <Border.Style>
                                 <Style TargetType="Border">
@@ -655,6 +673,8 @@
                                                Text="LOTUS Guard is a Windows service that watches the USB ports. It reads what a device says it is the moment Windows reports it, and switches a device the policy blocks off the way Device Manager does. The device stays off, also after a restart, until the policy allows it or you trust it." />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
                                                Text="Devices this PC has seen before, and that the policy would block, are marked as switched off while they are unplugged. They are already off when they come back." />
+                                    <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
+                                               Text="With &quot;Refuse new devices before they start&quot; on, Windows itself does not install a blocked device it has never seen, so that device never starts. A new device the policy allows is let through by LOTUS, which takes about a second." />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
                                                Text="Read-only mode uses the removable storage policy built into Windows, so the storage stack itself refuses the write." />
                                 </StackPanel>

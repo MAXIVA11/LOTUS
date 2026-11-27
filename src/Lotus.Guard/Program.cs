@@ -267,7 +267,7 @@ namespace Lotus.Guard
                     {
                         // The devices are back on all the same. The service tidies the list at its next start.
                     }
-                }, log.Write);
+                }, log.Write, null, new RegistryInstallGate());
             int count = ledger.Count;
             int problems = enforcer.ReleaseEverything();
             Console.WriteLine(problems == 0
@@ -288,8 +288,7 @@ namespace Lotus.Guard
         {
             ServiceName = LotusPaths.ServiceName;
             // Windows cannot be asked to stop this service. It stops when setup asks
-            // for it over the control pipe with the LOTUS password, and when Windows
-            // shuts down.
+            // for it over the control pipe, and when Windows shuts down.
             CanStop = false;
             CanShutdown = true;
             CanPauseAndContinue = false;

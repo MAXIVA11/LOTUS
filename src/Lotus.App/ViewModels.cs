@@ -221,6 +221,7 @@ namespace Lotus.App
         private bool readOnlyActive;
         private bool loaded;
         private bool lockdown;
+        private string strictState = "";
         private string policyError;
         private string eventsSignature = "";
         private string trustSignature = "";
@@ -336,6 +337,36 @@ namespace Lotus.App
             set { if (draft.AllowInput != value) { draft.AllowInput = value; RaiseDraft(); } }
         }
 
+        public bool DraftStrict
+        {
+            get => draft.Strict;
+            set { if (draft.Strict != value) { draft.Strict = value; RaiseDraft(); } }
+        }
+
+        /// <summary>There is nothing to refuse unless something is blocked.</summary>
+        public bool StrictOptionEnabled => draft.Storage == StorageMode.Block || draft.Pnp == PnpMode.Block;
+
+        public string StrictHint
+        {
+            get
+            {
+                if (!StrictOptionEnabled) return "Applies when storage is blocked or devices are trusted only.";
+                if (!draft.Strict)
+                {
+                    return "Off: a blocked device this PC has never seen runs for a few milliseconds before LOTUS has it switched off.";
+                }
+                if (live.Armed && live.Strict && strictState == "foreign")
+                {
+                    return "This PC already has device installation restrictions that LOTUS did not set, so LOTUS cannot add its own. Blocked devices are switched off straight after they start instead.";
+                }
+                if (live.Armed && live.Strict && strictState == "unsupported")
+                {
+                    return "This version of Windows cannot do this. Blocked devices are switched off straight after they start instead.";
+                }
+                return "Windows does not install a blocked device it has never seen, so it never starts. A new device the policy allows takes about a second longer to come up.";
+            }
+        }
+
         private void SetStorage(StorageMode mode)
         {
             if (draft.Storage == mode) return;
@@ -406,6 +437,9 @@ namespace Lotus.App
             Raise(nameof(PnpAllow));
             Raise(nameof(PnpBlock));
             Raise(nameof(DraftAllowInput));
+            Raise(nameof(DraftStrict));
+            Raise(nameof(StrictOptionEnabled));
+            Raise(nameof(StrictHint));
             Raise(nameof(StorageHint));
             Raise(nameof(PnpHint));
             Raise(nameof(InputHint));
@@ -426,6 +460,7 @@ namespace Lotus.App
             to.Storage = from.Storage;
             to.Pnp = from.Pnp;
             to.AllowInput = from.AllowInput;
+            to.Strict = from.Strict;
         }
 
         // ---------- snapshot ----------
@@ -439,6 +474,7 @@ namespace Lotus.App
             readOnlyActive = snapshot.ReadOnlyActive;
             policyError = snapshot.PolicyError;
             lockdown = snapshot.Lockdown;
+            strictState = snapshot.StrictState ?? "";
             lastDevices = snapshot.Devices;
 
             // Follow the saved policy unless the user is in the middle of editing.
@@ -464,6 +500,7 @@ namespace Lotus.App
             Raise(nameof(GuardMissing));
             Raise(nameof(HasPolicyError));
             Raise(nameof(PolicyErrorText));
+            Raise(nameof(StrictHint));
             Raise(nameof(NoDevices));
             Raise(nameof(NoTrusted));
             Raise(nameof(NoEvents));

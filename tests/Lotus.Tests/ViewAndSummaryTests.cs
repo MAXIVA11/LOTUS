@@ -106,8 +106,19 @@ namespace Lotus.Tests
             policy.AddTrust(TrustEntry.ForDevice(Devices.Stick()));
             Assert.Equal(
                 "armed, removable storage read-only, other USB devices blocked unless trusted " +
+                "(keyboards and mice stay allowed), new devices refused before they start, 1 trusted entry.",
+                GuardWorker.Summarize(policy));
+
+            policy.Strict = false;
+            Assert.Equal(
+                "armed, removable storage read-only, other USB devices blocked unless trusted " +
                 "(keyboards and mice stay allowed), 1 trusted entry.",
                 GuardWorker.Summarize(policy));
+
+            Assert.Equal(
+                "armed, removable storage blocked, other USB devices allowed, new storage devices refused " +
+                "before they start, 0 trusted entries.",
+                GuardWorker.Summarize(new Policy { Armed = true, Storage = StorageMode.Block }));
         }
 
         [Fact]

@@ -12,6 +12,8 @@ namespace Lotus.Core
     {
         public IDeviceBackend Backend;
         public IReadOnlyPolicy ReadOnly;
+        /// <summary>The Windows installation restrictions. Tests and the developer mode put their own in.</summary>
+        public IInstallGate InstallGate;
         public string PipeName = GuardProtocol.PipeName;
         /// <summary>Only elevated administrators may use the control pipe. Off in tests.</summary>
         public bool AdministratorsOnly = true;
@@ -66,6 +68,7 @@ namespace Lotus.Core
         private Policy policy = new Policy();
         private bool lockdown;
         private Enforcer enforcer;
+        private IInstallGate installGate;
         private bool markAbsentDue = true;
         private string stopPurpose;
         private string lastPassError;
@@ -145,8 +148,12 @@ namespace Lotus.Core
 
                 Ledger ledger = LoadLedger();
                 IDeviceBackend backend = options.Backend ?? new WindowsDeviceBackend();
+                // Anything that is not the installed service keeps its hands off
+                // the Windows policy: tests, and the guard developers start by hand.
+                installGate = options.InstallGate ??
+                              (options.HardenFolders ? (IInstallGate)new RegistryInstallGate() : new NoInstallGate());
                 enforcer = new Enforcer(backend, options.ReadOnly ?? new RegistryReadOnlyPolicy(), ledger, SaveLedger,
-                    log.Write);
+                    log.Write, null, installGate);
 
                 bool notifications = true;
                 if (options.WatchDevices)
@@ -406,7 +413,7 @@ namespace Lotus.Core
             }
 
             policy = lockdown ? LockdownPolicy() : content.Policy;
-            log.Write(EventTypes.PolicyChanged, "Policy loaded: " + Summarize(policy));
+            log.Write(EventTypes.PolicyChanged, "Policy loaded: " + PublicSummary(policy));
         }
 
         private bool SaveStore()
@@ -614,6 +621,7 @@ namespace Lotus.Core
             Dictionary<string, object> reply = Accept();
             reply["policy"] = Json.Parse(policy.ToJson());
             reply["ledger"] = Json.Parse(enforcer.Ledger.ToJson());
+            reply["strictState"] = StrictState();
             return reply;
         }
 
@@ -621,6 +629,23 @@ namespace Lotus.Core
         {
             return Refuse(GuardProtocol.ErrLockdown,
                 "LOTUS is locked down because its policy store was damaged. Run LOTUS-Setup again to reset it.");
+        }
+
+        /// <summary>"on", "off", or why Windows is not refusing new devices although the policy asks for it.</summary>
+        private string StrictState()
+        {
+            try
+            {
+                if (installGate == null) return "off";
+                if (installGate.Owned) return "on";
+                if (!policy.Armed || !policy.Strict) return "off";
+                if (!installGate.Supported) return "unsupported";
+                return installGate.Foreign ? "foreign" : "off";
+            }
+            catch (Exception)
+            {
+                return "unknown";
+            }
         }
 
         private Dictionary<string, object> ApplyPolicy(Dictionary<string, object> request)
@@ -652,7 +677,7 @@ namespace Lotus.Core
             policy = next;
             markAbsentDue = true;
             Interlocked.Exchange(ref fullSoon, 1);
-            log.Write(EventTypes.PolicyChanged, "Policy changed: " + Summarize(policy));
+            log.Write(EventTypes.PolicyChanged, "Policy changed: " + PublicSummary(policy));
             WriteStatus();
             return Accept();
         }
@@ -708,6 +733,17 @@ namespace Lotus.Core
             }
         }
 
+        /// <summary>
+        /// What the activity log says about a policy. Every user of the PC can
+        /// read that log, so it only says what the status file says anyway. The
+        /// settings and the trusted list stay in the encrypted store.
+        /// </summary>
+        public static string PublicSummary(Policy p)
+        {
+            return p.Armed ? "armed." : "disarmed, nothing is blocked.";
+        }
+
+        /// <summary>The policy in one sentence, for the app and the command line, which may see all of it.</summary>
         public static string Summarize(Policy p)
         {
             if (!p.Armed) return "disarmed, nothing is blocked.";
@@ -718,6 +754,8 @@ namespace Lotus.Core
                 ? "other USB devices blocked unless trusted" +
                   (p.AllowInput ? " (keyboards and mice stay allowed)" : "")
                 : "other USB devices allowed";
+            if (p.Strict && p.Pnp == PnpMode.Block) pnp += ", new devices refused before they start";
+            else if (p.Strict && p.Storage == StorageMode.Block) pnp += ", new storage devices refused before they start";
             string trusted = p.Trusted.Count == 1 ? "1 trusted entry" : p.Trusted.Count + " trusted entries";
             return "armed, " + storage + ", " + pnp + ", " + trusted + ".";
         }

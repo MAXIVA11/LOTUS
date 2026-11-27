@@ -169,6 +169,9 @@ namespace Lotus.Core.Native
         [DllImport(Dll)]
         public static extern int CM_Reenumerate_DevNode(int devInst, int flags);
 
+        [DllImport("cfgmgr32.dll")]
+        public static extern int CM_Uninstall_DevNode(int devInst, int flags);
+
         [DllImport(Dll)]
         public static extern int CM_Register_Notification(byte[] filter, IntPtr context,
             CM_NOTIFY_CALLBACK callback, out IntPtr notifyContext);
