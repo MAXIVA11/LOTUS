@@ -232,14 +232,7 @@ namespace Lotus.Setup
                 string path = Path.Combine(SecureDir, name);
                 try
                 {
-                    if (!File.Exists(path)) continue;
-                    var open = new FileSecurity();
-                    open.SetAccessRuleProtection(true, false);
-                    open.AddAccessRule(new FileSystemAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-                        FileSystemRights.FullControl, AccessControlType.Allow));
-                    File.SetAccessControl(path, open);
-                    File.Delete(path);
+                    FolderGuard.DeleteFile(path);
                 }
                 catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
                 {
@@ -330,8 +323,9 @@ namespace Lotus.Setup
         }
 
         /// <summary>
-        /// The data folder holds the policy. Administrators and SYSTEM may change it.
-        /// Everyone else may only read, which the notifier needs for the activity log.
+        /// The data folder holds the policy store and the activity log. Only the
+        /// service writes there. Everyone may read the log, which the notifier
+        /// needs, and only administrators may read the folder with the store.
         /// </summary>
         private void PrepareDataFolder()
         {
@@ -353,7 +347,11 @@ namespace Lotus.Setup
                     }
                 }
 
-                if (!FolderGuard.CreateNew(DataDir, FolderGuard.PublicFolderRules()))
+                // A new folder starts with rules under which administrators have
+                // full control and ordinary users have none. The final rules, under
+                // which administrators can only read, go on last: with them in place
+                // setup could no longer create the folder for the policy store.
+                if (!FolderGuard.CreateNew(DataDir, FolderGuard.WorkingFolderRules()))
                 {
                     // Still there, so it is either the folder of an earlier LOTUS or one
                     // that came back in the instant after it was removed.
@@ -362,30 +360,65 @@ namespace Lotus.Setup
                     {
                         throw new SetupException("Could not protect the policy folder. " + problem);
                     }
-                    FolderGuard.Apply(DataDir, FolderGuard.PublicFolderRules(), "secure");
                 }
 
                 if (Directory.Exists(SecureDir) && FolderGuard.IsReparsePoint(SecureDir))
                 {
                     Directory.Delete(SecureDir, false);
                 }
-                if (!FolderGuard.CreateNew(SecureDir, FolderGuard.SecretFolderRules()))
-                {
-                    FolderGuard.Apply(SecureDir, FolderGuard.SecretFolderRules(), "seal.key");
-                }
-                string key = Path.Combine(SecureDir, "seal.key");
-                if (File.Exists(key) && !FolderGuard.IsReparsePoint(key))
-                {
-                    File.SetAccessControl(key, FolderGuard.KeyFileRules());
-                }
 
+                string trouble = null;
+                if (Directory.Exists(SecureDir))
+                {
+                    trouble = TrySetRules(SecureDir, FolderGuard.SecretFolderRules());
+                }
+                else
+                {
+                    try
+                    {
+                        FolderGuard.CreateNew(SecureDir, FolderGuard.SecretFolderRules());
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        // The folder of an installed LOTUS, which administrators can only
+                        // read. Open it for the moment it takes to create the subfolder.
+                        trouble = TrySetRules(DataDir, FolderGuard.WorkingFolderRules());
+                        FolderGuard.CreateNew(SecureDir, FolderGuard.SecretFolderRules());
+                    }
+                }
+                trouble = TrySetRules(DataDir, FolderGuard.PublicFolderRules()) ?? trouble;
+
+                // The files inside are the service's. It runs as the system account,
+                // puts the same rules on every one of them each time it starts, and is
+                // the only one that may touch the seal key. What setup has to be sure
+                // of is that both folders are real and that nobody without
+                // administrator rights can change them.
                 string after = FolderGuard.Inspect(DataDir) ?? FolderGuard.Inspect(SecureDir);
-                if (after != null) throw new SetupException("Could not protect the policy folder. " + after);
+                if (after != null)
+                {
+                    throw new SetupException("Could not protect the policy folder. " + after +
+                                             (trouble != null ? " " + trouble : ""));
+                }
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
                                        ex is InvalidOperationException)
             {
                 throw new SetupException("Could not protect the policy folder. " + ex.Message, ex);
+            }
+        }
+
+        /// <summary>Returns what went wrong, or null. The check that follows decides whether it matters.</summary>
+        private static string TrySetRules(string directory, DirectorySecurity rules)
+        {
+            try
+            {
+                FolderGuard.SetRules(directory, rules);
+                return null;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                       ex is InvalidOperationException)
+            {
+                return ex.Message;
             }
         }
 

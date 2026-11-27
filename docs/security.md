@@ -33,6 +33,8 @@ You choose a LOTUS password the first time you arm LOTUS. From then on the servi
 
 The password is stored as PBKDF2-HMAC-SHA256 with a random salt and 210,000 rounds. After five wrong attempts the service pauses password entry for 30 seconds, and the pause doubles with each further attempt up to 15 minutes. Wrong attempts are written to the activity log.
 
+A policy carried over from LOTUS 1.0 has no password. It stays in force as it was, and LOTUS asks you to choose a password the next time you apply an armed policy.
+
 LOTUS cannot recover a lost password. See [If the password is lost](#if-the-password-is-lost).
 
 ## The service
@@ -60,9 +62,9 @@ Before 1.1 the code was reviewed and attacked with the three attackers above in 
 
 | Finding | Severity | Fixed in 1.1 by |
 | --- | --- | --- |
-| A user who created `C:\ProgramData\LOTUS` before installation stayed its owner and could rewrite the policy afterwards | High | Setup checks owner and permissions and replaces a folder it cannot trust. The service repeats the check at every start |
+| A user who created `C:\ProgramData\LOTUS` before installation stayed its owner and could rewrite the policy afterwards | High | Setup checks owner and permissions and replaces a folder it cannot trust. The service puts the owner and the permissions back every time it starts |
 | Setup loaded ten system libraries from its own folder while running with administrator rights | Medium | Library search restricted to the system folder. Confirmed: the 1.0 installer loads planted copies, the 1.1 installer loads none |
-| A blocked drive stayed usable for seconds when a program had it open | Medium | Decision at enumeration, forced port cycle, quick retries |
+| A blocked drive stayed usable for seconds when a program had it open | Medium | The device is judged the moment it appears, a refused switch-off is forced by resetting the port, and failures are retried four times a second. Measured in 1.1: a device Windows had never seen ran for 5 to 7 milliseconds, and a device blocked before did not start at all |
 | Any user could read the policy and the trusted list | Low | The policy store moved to a folder only administrators can read |
 | The policy was a plain file any administrator could edit | By design in 1.0 | Sealed store, password, service as the only writer |
 | A device name could carry control characters or text-reordering characters into the log and the window | Low | Names are cleaned before use |
@@ -75,6 +77,8 @@ Examined and found sound: the JSON reader (depth limit, large inputs, bad number
 
 - Trust is based on what a device reports. A device built to copy the vendor ID, product ID, serial number and interfaces of a trusted device is treated as that device. Trusting a whole model accepts any device that claims that model.
 - With "Keep keyboards and mice working" on, which is the default, any device that is only a keyboard or mouse works. Turn it off to stop devices that type on their own.
+- A device this PC has never seen runs for a few milliseconds before LOTUS has it switched off, and Windows reads its descriptors and loads its driver in that time. A device built to attack the Windows USB drivers themselves is not stopped by LOTUS.
+- Trust entries carried over from LOTUS 1.0 do not record what the device does, because 1.0 did not store that. Remove such a device from the trusted list and trust it again to pin its functions.
 - LOTUS runs in user mode. An administrator can become the system account, and the system account can do anything the service can. The password, the sealed store and the service permissions stop casual and accidental changes and make deliberate ones take effort. They do not make LOTUS removal-proof against someone who controls the PC.
 - Starting Windows in Safe Mode, or from another disk, bypasses the service entirely.
 - LOTUS covers USB ports. It does not manage Bluetooth pairing, Thunderbolt docks, SATA ports or network shares.

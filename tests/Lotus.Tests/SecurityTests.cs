@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using Lotus.Core;
@@ -496,6 +498,70 @@ namespace Lotus.Tests
             Ledger back = Ledger.FromJson(ledger.ToJson());
             Assert.True(back.Get(Devices.ComboId).Premarked);
             Assert.False(back.Get(Devices.ComboId).KindsKnown);
+        }
+    }
+
+    public class FolderGuardTests
+    {
+        /// <summary>
+        /// Setup puts the final rules on a folder it may only read by then. That
+        /// works because the access list is written on its own, apart from the owner.
+        /// </summary>
+        [Fact]
+        public void SetRules_replaces_the_access_list_of_a_folder_and_leaves_its_contents_alone()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "lotus-acl-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string file = Path.Combine(dir, "inside.txt");
+            File.WriteAllText(file, "kept");
+            try
+            {
+                FolderGuard.SetRules(dir, FolderGuard.PublicFolderRules());
+
+                DirectorySecurity now = Directory.GetAccessControl(dir, AccessControlSections.Access);
+                Assert.True(now.AreAccessRulesProtected);
+                List<FileSystemAccessRule> rules = now.GetAccessRules(true, true, typeof(SecurityIdentifier))
+                    .Cast<FileSystemAccessRule>().ToList();
+                Assert.Equal(3, rules.Count);
+                Assert.All(rules, rule => Assert.Equal(AccessControlType.Allow, rule.AccessControlType));
+
+                const FileSystemRights writing = FileSystemRights.WriteData | FileSystemRights.AppendData |
+                                                 FileSystemRights.Delete | FileSystemRights.ChangePermissions |
+                                                 FileSystemRights.TakeOwnership;
+                var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+                foreach (FileSystemAccessRule rule in rules)
+                {
+                    bool mayWrite = (rule.FileSystemRights & writing) != 0;
+                    Assert.Equal(rule.IdentityReference.Equals(system), mayWrite);
+                }
+
+                // Setting the same rules twice is what an update does.
+                FolderGuard.SetRules(dir, FolderGuard.PublicFolderRules());
+                Assert.Equal(3, Directory.GetAccessControl(dir, AccessControlSections.Access)
+                    .GetAccessRules(true, true, typeof(SecurityIdentifier)).Count);
+                Assert.Equal("kept", File.ReadAllText(file));
+            }
+            finally
+            {
+                var open = new DirectorySecurity();
+                open.SetAccessRuleProtection(false, false);
+                Directory.SetAccessControl(dir, open);
+                Directory.Delete(dir, true);
+            }
+        }
+
+        [Fact]
+        public void Working_rules_shut_ordinary_users_out_and_let_administrators_write()
+        {
+            DirectorySecurity rules = FolderGuard.WorkingFolderRules();
+            var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+            var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            List<FileSystemAccessRule> list = rules.GetAccessRules(true, false, typeof(SecurityIdentifier))
+                .Cast<FileSystemAccessRule>().ToList();
+            Assert.True(rules.AreAccessRulesProtected);
+            Assert.DoesNotContain(list, rule => rule.IdentityReference.Equals(users));
+            Assert.Contains(list, rule => rule.IdentityReference.Equals(admins) &&
+                                          rule.FileSystemRights == FileSystemRights.FullControl);
         }
     }
 

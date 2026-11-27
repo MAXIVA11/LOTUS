@@ -71,6 +71,69 @@ namespace Lotus.Core
             return security;
         }
 
+        /// <summary>
+        /// What setup puts on the data folder while it works in it: the service and
+        /// administrators have full control and nobody else gets in. Setup swaps
+        /// this for <see cref="PublicFolderRules"/> before the service starts.
+        /// </summary>
+        public static DirectorySecurity WorkingFolderRules()
+        {
+            var security = new DirectorySecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.SetOwner(Administrators);
+            security.AddAccessRule(new FileSystemAccessRule(LocalSystem, FileSystemRights.FullControl, Inherit,
+                PropagationFlags.None, AccessControlType.Allow));
+            security.AddAccessRule(new FileSystemAccessRule(Administrators, FileSystemRights.FullControl, Inherit,
+                PropagationFlags.None, AccessControlType.Allow));
+            return security;
+        }
+
+        /// <summary>
+        /// Puts the rules on one existing folder, without touching what is inside.
+        /// The owner and the access list are written in two steps. An administrator
+        /// who owns a folder may always rewrite its access list, even when that list
+        /// gives administrators read access only, but changing the owner in the
+        /// same call would need a right the list does not give.
+        /// </summary>
+        public static void SetRules(string directory, DirectorySecurity rules)
+        {
+            EnablePrivilege("SeTakeOwnershipPrivilege");
+            EnablePrivilege("SeRestorePrivilege");
+            try
+            {
+                var owner = new DirectorySecurity();
+                owner.SetOwner(Administrators);
+                Directory.SetAccessControl(directory, owner);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                       ex is InvalidOperationException)
+            {
+                // Fine when the owner is right already. Inspect has the last word.
+            }
+
+            var access = new DirectorySecurity();
+            access.SetAccessRuleProtection(rules.AreAccessRulesProtected, false);
+            foreach (FileSystemAccessRule rule in rules.GetAccessRules(true, false, typeof(SecurityIdentifier)))
+            {
+                access.AddAccessRule(rule);
+            }
+            Directory.SetAccessControl(directory, access);
+        }
+
+        /// <summary>
+        /// Deletes one file an administrator may not be allowed to write to, by
+        /// taking it over first. Does nothing to a link.
+        /// </summary>
+        public static void DeleteFile(string path)
+        {
+            if (!File.Exists(path) || IsReparsePoint(path)) return;
+            EnablePrivilege("SeTakeOwnershipPrivilege");
+            EnablePrivilege("SeRestorePrivilege");
+            TakeOver(path, false);
+            File.SetAttributes(path, FileAttributes.Normal);
+            File.Delete(path);
+        }
+
         public static bool IsReparsePoint(string path)
         {
             try

@@ -56,9 +56,6 @@ A device you trust as "this device" is matched by its serial number. A device yo
 > [!NOTE]
 > Nothing is blocked after installation. LOTUS stays disarmed until you choose a policy and switch it on.
 
-> [!IMPORTANT]
-> This page describes version 1.1, which is on the main branch and has not been released yet. The download on the releases page is 1.0.0, which has no password, no sealed policy store and slower blocking. To try 1.1 now, [build it from source](#build-from-source).
-
 The setup file is not code signed, so Windows SmartScreen may show "Windows protected your PC" the first time. Choose More info, then Run anyway. Each release lists the file's SHA-256 hash so you can check your download.
 
 LOTUS runs on Windows 10 (version 1607 or newer) and Windows 11. It uses the .NET Framework 4.6.2 or newer that those versions already include, so there is no runtime to install.
@@ -102,7 +99,7 @@ Whoever is at the PC sees this when a device is blocked:
 
 ## How blocking works
 
-LOTUS Guard is a Windows service that runs as SYSTEM. Windows tells it the moment a device appears on a USB port, before the device's driver has started. The service reads what the device is from the device's own descriptors, checks that against the policy, and switches a blocked device off with the same Windows call Device Manager uses for "Disable device".
+LOTUS Guard is a Windows service that runs as SYSTEM. Windows tells it as soon as a device appears on a USB port. The service reads what the device is from the device's own descriptors, checks that against the policy, and switches a blocked device off with the same Windows call Device Manager uses for "Disable device".
 
 <p align="center">
   <img src="docs/assets/decision-flow.svg" width="100%" alt="A device on a USB port passes five checks from left to right. If LOTUS is disarmed, if Windows boots from the device, or if the device is on the trusted list, it is allowed. If it has storage and storage is set to block, or if it does anything else and USB devices are set to trusted only, it is blocked. A device that no check stops is allowed.">
@@ -111,6 +108,8 @@ LOTUS Guard is a Windows service that runs as SYSTEM. Windows tells it the momen
 Check 05 has two exceptions. A device that Windows reports as built into the computer, such as a laptop webcam, is allowed. So is a device whose only other function is input, as long as "Keep keyboards and mice working" is on.
 
 The disabled state belongs to that device, and Windows remembers it. A blocked drive stays off when it is unplugged and plugged back in, after a restart, and while the service is stopped. Devices this PC has seen before, and that the policy blocks, are marked as disabled while they are unplugged, so they are already off when they come back.
+
+A device this PC has never seen has no record to mark, so Windows starts it and LOTUS switches it off straight after. On the test PC that took 5 to 7 milliseconds.
 
 Sometimes Windows refuses to stop a device because a program has it open, typically Explorer reading a drive that was just plugged in. LOTUS then takes the device off the bus by resetting its USB port, which no program can refuse.
 
@@ -126,6 +125,7 @@ The full description is in [docs/how-it-works.md](docs/how-it-works.md).
 
 - Trust is based on what a device reports about itself. A device built to copy the vendor, product, serial number and functions of a trusted device is treated as that device.
 - With "Keep keyboards and mice working" on, any device that is only a keyboard or mouse works, including one that types on its own.
+- A device this PC has never seen runs for a few milliseconds before LOTUS has it switched off. Windows reads the device's descriptors and loads its driver in that time. LOTUS runs as a service and cannot step in before Windows does.
 - The password and the sealed store stop casual and accidental changes. Someone with administrator rights who is determined to remove LOTUS, for example from Safe Mode, can still do so.
 - LOTUS covers USB ports. It does not manage Bluetooth pairing, Thunderbolt docks, SATA ports or network shares.
 - Read-only mode applies to every removable drive, trusted ones included, because Windows applies it to the whole class of device. It also covers CD and DVD writers.
@@ -191,7 +191,7 @@ The result is `dist\LOTUS-Setup.exe`. The script builds the app and the service,
 
 `dotnet test tests\Lotus.Tests` runs the unit tests. They cover the policy engine, the sealed store and the password rules, and they run the real service loop against a simulated USB bus and talk to it over a real pipe.
 
-The scripts in `tests\hardware` need an administrator prompt and real devices. `e2e-install.ps1` updates whatever LOTUS is installed, installs fresh, and then checks on real hardware that one chosen device is blocked and released, how quickly a device Windows has never seen is switched off, that the password guards every change, that the service resists being stopped and that an edited policy store is put back. It ends by removing LOTUS with the password and through the setup window. Read the comments at the top of each script before running it.
+The scripts in `tests\hardware` need an administrator prompt and real devices. `e2e-install.ps1` updates whatever LOTUS is installed, installs fresh, and then checks on real hardware that one chosen device is blocked and released, that a blocked device stays off when it is plugged in again, how long a device Windows has never seen runs before it is switched off, that the password guards every change, that the service resists being stopped and that an edited policy store is put back. It ends by removing LOTUS with the password and through the setup window. Read the comments at the top of each script before running it.
 
 ## About the look
 
