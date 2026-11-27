@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Linux has no .NET Framework. The program is published as one file that carries its own runtime. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <RootNamespace>Lotus.Linux</RootNamespace>
+    <AssemblyName>lotus</AssemblyName>
+    <Description>LOTUS USB device control for Linux</Description>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Lotus.Linux.Tests" />
+    <!-- The parts of LOTUS that are the same on every system are compiled in from
+         Lotus.Core: the policy, the engine, the enforcer, the encrypted store and
+         the service loop. What talks to Windows stays behind. -->
+    <Compile Include="..\Lotus.Core\ActivityLog.cs" Link="Core\ActivityLog.cs" />
+    <Compile Include="..\Lotus.Core\Enforcer.cs" Link="Core\Enforcer.cs" />
+    <Compile Include="..\Lotus.Core\GuardPlatform.cs" Link="Core\GuardPlatform.cs" />
+    <Compile Include="..\Lotus.Core\GuardWorker.cs" Link="Core\GuardWorker.cs" />
+    <Compile Include="..\Lotus.Core\IDeviceBackend.cs" Link="Core\IDeviceBackend.cs" />
+    <Compile Include="..\Lotus.Core\IReadOnlyPolicy.cs" Link="Core\IReadOnlyPolicy.cs" />
+    <Compile Include="..\Lotus.Core\InstallGate.cs" Link="Core\InstallGate.cs" />
+    <Compile Include="..\Lotus.Core\Json.cs" Link="Core\Json.cs" />
+    <Compile Include="..\Lotus.Core\Ledger.cs" Link="Core\Ledger.cs" />
+    <Compile Include="..\Lotus.Core\LotusPaths.cs" Link="Core\LotusPaths.cs" />
+    <Compile Include="..\Lotus.Core\Policy.cs" Link="Core\Policy.cs" />
+    <Compile Include="..\Lotus.Core\PolicyEngine.cs" Link="Core\PolicyEngine.cs" />
+    <Compile Include="..\Lotus.Core\SystemWords.cs" Link="Core\SystemWords.cs" />
+    <Compile Include="..\Lotus.Core\PublicStatus.cs" Link="Core\PublicStatus.cs" />
+    <Compile Include="..\Lotus.Core\SimulatedBackend.cs" Link="Core\SimulatedBackend.cs" />
+    <Compile Include="..\Lotus.Core\TextSafety.cs" Link="Core\TextSafety.cs" />
+    <Compile Include="..\Lotus.Core\UsbClassifier.cs" Link="Core\UsbClassifier.cs" />
+    <Compile Include="..\Lotus.Core\UsbDescriptorParser.cs" Link="Core\UsbDescriptorParser.cs" />
+    <Compile Include="..\Lotus.Core\UsbDevice.cs" Link="Core\UsbDevice.cs" />
+    <Compile Include="..\Lotus.Core\Security\GuardProtocol.cs" Link="Core\GuardProtocol.cs" />
+    <Compile Include="..\Lotus.Core\Security\GuardReads.cs" Link="Core\GuardReads.cs" />
+    <Compile Include="..\Lotus.Core\Security\ObjectCodec.cs" Link="Core\ObjectCodec.cs" />
+    <Compile Include="..\Lotus.Core\Security\SealedBox.cs" Link="Core\SealedBox.cs" />
+    <Compile Include="..\Lotus.Core\Security\Secrets.cs" Link="Core\Secrets.cs" />
+    <Compile Include="..\Lotus.Core\Security\SecureStore.cs" Link="Core\SecureStore.cs" />
+  </ItemGroup>
+</Project>
