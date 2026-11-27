@@ -178,7 +178,7 @@ namespace Lotus.App
                 case EventTypes.GuardStopped: row.TypeText = "GUARD"; row.TypeKey = "quiet"; break;
                 case EventTypes.Error: row.TypeText = "ERROR"; row.TypeKey = "warn"; break;
                 case EventTypes.Tamper: row.TypeText = "TAMPERING"; row.TypeKey = "stop"; break;
-                case EventTypes.Security: row.TypeText = "PASSWORD"; row.TypeKey = "info"; break;
+                case EventTypes.Security: row.TypeText = "SETUP"; row.TypeKey = "info"; break;
                 default: row.TypeText = "WARNING"; row.TypeKey = "warn"; break;
             }
             return row;
@@ -201,27 +201,6 @@ namespace Lotus.App
         public string Warning = "";
         public string ConfirmText = "APPLY";
         public bool Danger;
-        public PasswordAsk Ask = PasswordAsk.None;
-        /// <summary>Shown in red above the buttons, for example after a wrong password.</summary>
-        public string Error = "";
-    }
-
-    /// <summary>Which password fields a dialog shows.</summary>
-    public enum PasswordAsk
-    {
-        None,
-        /// <summary>The current password.</summary>
-        Enter,
-        /// <summary>A new password, typed twice.</summary>
-        Create,
-        /// <summary>The current password and a new one, typed twice.</summary>
-        Change
-    }
-
-    public sealed class PasswordAnswer
-    {
-        public string Current = "";
-        public string New = "";
     }
 
     /// <summary>A policy change that is ready to be confirmed and saved.</summary>
@@ -241,7 +220,6 @@ namespace Lotus.App
         private GuardState guard;
         private bool readOnlyActive;
         private bool loaded;
-        private bool hasPassword;
         private bool lockdown;
         private string policyError;
         private string eventsSignature = "";
@@ -310,11 +288,6 @@ namespace Lotus.App
               "untrusted USB devices are blocked. Run LOTUS-Setup again to reset it."
             : policyError;
 
-        public bool HasPassword => hasPassword;
-        public string PasswordButtonText => hasPassword ? "CHANGE PASSWORD" : "SET A PASSWORD";
-        public string ProtectionText => hasPassword
-            ? "A LOTUS password is set. Every change to the policy, the trusted list and the password itself asks for it, and so does removing LOTUS."
-            : "No LOTUS password is set yet. You choose one the first time you arm LOTUS. From then on every change asks for it.";
         public bool NoDevices => loaded && Devices.Count == 0;
         public bool NoTrusted => loaded && Trusted.Count == 0;
         public bool NoEvents => loaded && Events.Count == 0;
@@ -465,7 +438,6 @@ namespace Lotus.App
             guard = snapshot.Guard;
             readOnlyActive = snapshot.ReadOnlyActive;
             policyError = snapshot.PolicyError;
-            hasPassword = snapshot.HasPassword;
             lockdown = snapshot.Lockdown;
             lastDevices = snapshot.Devices;
 
@@ -492,9 +464,6 @@ namespace Lotus.App
             Raise(nameof(GuardMissing));
             Raise(nameof(HasPolicyError));
             Raise(nameof(PolicyErrorText));
-            Raise(nameof(HasPassword));
-            Raise(nameof(PasswordButtonText));
-            Raise(nameof(ProtectionText));
             Raise(nameof(NoDevices));
             Raise(nameof(NoTrusted));
             Raise(nameof(NoEvents));
@@ -722,10 +691,6 @@ namespace Lotus.App
         {
             live = next.Clone();
             if (followSettings) CopySettings(next, draft);
-            hasPassword = hasPassword || next.Armed;
-            Raise(nameof(HasPassword));
-            Raise(nameof(PasswordButtonText));
-            Raise(nameof(ProtectionText));
             RaiseDraft();
         }
     }

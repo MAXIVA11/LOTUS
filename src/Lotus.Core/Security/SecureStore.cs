@@ -6,18 +6,16 @@ using System.Text;
 
 namespace Lotus.Core
 {
-    /// <summary>Everything LOTUS has to keep safe: the policy and the password record.</summary>
+    /// <summary>What LOTUS has to keep safe: the policy.</summary>
     public sealed class StoreContent
     {
         public Policy Policy = new Policy();
-        /// <summary>Null until a password has been set.</summary>
-        public PasswordRecord Password;
         /// <summary>Goes up by one with every save.</summary>
         public long Serial;
 
         public StoreContent Clone()
         {
-            return new StoreContent { Policy = Policy.Clone(), Password = Password, Serial = Serial };
+            return new StoreContent { Policy = Policy.Clone(), Serial = Serial };
         }
     }
 
@@ -29,7 +27,7 @@ namespace Lotus.Core
         Ok,
         /// <summary>The store was damaged and the last good copy was used instead.</summary>
         Restored,
-        /// <summary>A policy file from LOTUS 1.0 was found and taken over.</summary>
+        /// <summary>A policy from LOTUS 1.0 or 1.1 was found and taken over.</summary>
         Legacy,
         /// <summary>The store exists but neither it nor its copy can be trusted.</summary>
         Tampered
@@ -44,21 +42,23 @@ namespace Lotus.Core
     }
 
     /// <summary>
-    /// The sealed policy store. The policy is still JSON, but it carries a keyed
-    /// checksum made with a key only the service can read. Anyone who edits the
-    /// file without that key breaks the seal, and the service then ignores the edit,
-    /// puts the file back and writes down that someone tried.
+    /// The encrypted policy store. The policy and the list of blocked devices are
+    /// kept as binary records inside encrypted, authenticated files. The key is 32
+    /// random bytes that only the service account can read. Someone who finds the
+    /// files sees noise, and someone who changes them breaks the seal: the service
+    /// then ignores the change, puts its own copy back and writes down that
+    /// someone tried.
     /// </summary>
     public sealed class SecureStore
     {
-        private const string Header = "LOTUS-STORE-1";
-        private static readonly byte[] KeyEntropy = Encoding.ASCII.GetBytes("LOTUS seal key v1");
-        private const int MaxStoreBytes = 4 * 1024 * 1024;
+        private const string OldHeader = "LOTUS-STORE-1";
+        private const int MaxStoreBytes = 12 * 1024 * 1024;
 
         private readonly string directory;
         private readonly string legacyPolicyPath;
         private byte[] key;
         private byte[] lastWritten;
+        private bool oldFormatSeen;
 
         public SecureStore(string secureDirectory, string legacyPolicyPath = null)
         {
@@ -70,6 +70,9 @@ namespace Lotus.Core
         public string BackupPath => StorePath + ".bak";
         public string PendingPath => StorePath + ".tmp";
         public string KeyPath => Path.Combine(directory, "seal.key");
+        public string LedgerPath => Path.Combine(directory, "ledger.dat");
+        /// <summary>Where LOTUS 1.1 kept the list of blocked devices, readable by administrators.</summary>
+        public string OldLedgerPath => Path.Combine(directory, "ledger.json");
 
         /// <summary>
         /// The permissions the key file is created with. Left empty in tests. The
@@ -78,7 +81,14 @@ namespace Lotus.Core
         /// </summary>
         public Func<System.Security.AccessControl.FileSecurity> KeyFileSecurity;
 
-        /// <summary>True once a seal key is loaded, which means saves can be made.</summary>
+        /// <summary>
+        /// Wraps and unwraps the key for the disk. On Windows this is the data
+        /// protection service of the machine, so the key file is useless on any
+        /// other PC. Tests and other systems put their own in.
+        /// </summary>
+        public IKeyWrap KeyWrap = PlatformKeyWrap.Create();
+
+        /// <summary>True once a key is loaded, which means saves can be made.</summary>
         public bool HasKey => key != null;
 
         // ---------- load ----------
@@ -88,6 +98,7 @@ namespace Lotus.Core
             var result = new StoreLoad();
             bool keyOnDisk = File.Exists(KeyPath);
             key = ReadKey(out string keyProblem);
+            oldFormatSeen = false;
 
             bool anyStore = File.Exists(StorePath) || File.Exists(BackupPath) || File.Exists(PendingPath);
             if (!anyStore)
@@ -114,7 +125,8 @@ namespace Lotus.Core
             if (key == null)
             {
                 result.State = StoreState.Tampered;
-                result.Problem = "The seal key is missing or unreadable." + (keyProblem == null ? "" : " " + keyProblem);
+                result.Problem = "The key of the policy store is missing or unreadable." +
+                                 (keyProblem == null ? "" : " " + keyProblem);
                 return result;
             }
 
@@ -124,13 +136,22 @@ namespace Lotus.Core
             foreach (string candidate in new[] { StorePath, PendingPath, BackupPath })
             {
                 if (!File.Exists(candidate)) continue;
-                StoreContent content = TryRead(candidate, out string problem);
+                StoreContent content = TryRead(candidate, out string problem, out bool oldFormat);
                 if (content == null)
                 {
                     problems.Add(Path.GetFileName(candidate) + ": " + problem);
                     continue;
                 }
                 result.Content = content;
+                if (oldFormat)
+                {
+                    // Written by LOTUS 1.1: sealed, but readable. It is rewritten
+                    // in the encrypted form at the next save.
+                    oldFormatSeen = true;
+                    result.State = StoreState.Legacy;
+                    if (problems.Count > 0) result.Problem = string.Join(" ", problems);
+                    return result;
+                }
                 result.State = candidate == StorePath ? StoreState.Ok : StoreState.Restored;
                 if (problems.Count > 0) result.Problem = string.Join(" ", problems);
                 else if (candidate != StorePath) result.Problem = "The policy store was missing.";
@@ -142,34 +163,51 @@ namespace Lotus.Core
             return result;
         }
 
-        private StoreContent TryRead(string path, out string problem)
+        private StoreContent TryRead(string path, out string problem, out bool oldFormat)
         {
             problem = null;
+            oldFormat = false;
             try
             {
                 byte[] bytes = ReadAll(path);
-                if (!SplitSealed(bytes, out byte[] mac, out byte[] payload))
+                if (SealedBox.LooksSealed(bytes))
                 {
-                    problem = "it is not a sealed LOTUS store.";
-                    return null;
+                    byte[] plain = SealedBox.Open(key, SealedBox.KindPolicy, bytes, out long serial);
+                    StoreContent content = FromRecord(ObjectCodec.Decode(plain));
+                    content.Serial = serial;
+                    if (path == StorePath) lastWritten = bytes;
+                    return content;
                 }
-                using (var hmac = new HMACSHA256(key))
+                if (SplitOldFormat(bytes, out byte[] mac, out byte[] payload))
                 {
-                    if (!Secrets.FixedTimeEquals(hmac.ComputeHash(payload), mac))
+                    using (var hmac = new HMACSHA256(key))
                     {
-                        problem = "its seal is broken, so it was changed outside LOTUS.";
-                        return null;
+                        if (!Secrets.FixedTimeEquals(hmac.ComputeHash(payload), mac))
+                        {
+                            problem = "its seal is broken, so it was changed outside LOTUS.";
+                            return null;
+                        }
                     }
+                    oldFormat = true;
+                    return ParseOldPayload(Encoding.UTF8.GetString(payload));
                 }
-                StoreContent content = ParsePayload(Encoding.UTF8.GetString(payload));
-                if (path == StorePath) lastWritten = bytes;
-                return content;
+                problem = "it is not a LOTUS store.";
+                return null;
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is FormatException)
             {
                 problem = ex.Message;
                 return null;
             }
+        }
+
+        private static StoreContent FromRecord(object record)
+        {
+            Dictionary<string, object> root = Json.AsObject(record);
+            if (root == null) throw new FormatException("The store holds no record.");
+            Dictionary<string, object> policy = Json.AsObject(root.TryGetValue("policy", out object p) ? p : null);
+            if (policy == null) throw new FormatException("The store holds no policy.");
+            return new StoreContent { Policy = Policy.FromJson(Json.Write(policy, false)) };
         }
 
         private static byte[] ReadAll(string path)
@@ -191,8 +229,10 @@ namespace Lotus.Core
             }
         }
 
-        /// <summary>Splits a sealed file into its checksum and its payload. No key is needed for this.</summary>
-        private static bool SplitSealed(byte[] bytes, out byte[] mac, out byte[] payload)
+        // ---------- the store LOTUS 1.1 wrote ----------
+
+        /// <summary>Splits a 1.1 store into its checksum and its payload.</summary>
+        private static bool SplitOldFormat(byte[] bytes, out byte[] mac, out byte[] payload)
         {
             mac = payload = null;
             int firstBreak = Array.IndexOf(bytes, (byte)'\n');
@@ -200,7 +240,7 @@ namespace Lotus.Core
             int secondBreak = Array.IndexOf(bytes, (byte)'\n', firstBreak + 1);
             if (secondBreak < 0) return false;
             string header = Encoding.ASCII.GetString(bytes, 0, firstBreak).Trim();
-            if (header != Header) return false;
+            if (header != OldHeader) return false;
             try
             {
                 mac = Convert.FromBase64String(
@@ -215,48 +255,19 @@ namespace Lotus.Core
             return mac.Length == 32;
         }
 
-        private static StoreContent ParsePayload(string text)
+        /// <summary>Takes the policy out of a 1.1 store. The password record it also held is dropped.</summary>
+        private static StoreContent ParseOldPayload(string text)
         {
             Dictionary<string, object> root = Json.AsObject(Json.Parse(text));
-            if (root == null) throw new FormatException("The store must contain a JSON object.");
-            var content = new StoreContent();
+            if (root == null) throw new FormatException("The store holds no record.");
             Dictionary<string, object> policy = Json.AsObject(root.TryGetValue("policy", out object p) ? p : null);
             if (policy == null) throw new FormatException("The store holds no policy.");
-            content.Policy = Policy.FromJson(Json.Write(policy, false));
-            content.Password = PasswordRecord.FromJsonObject(
-                Json.AsObject(root.TryGetValue("password", out object a) ? a : null));
-            if (root.TryGetValue("password", out object raw) && raw != null && content.Password == null)
-            {
-                throw new FormatException("The password record is damaged.");
-            }
+            var content = new StoreContent { Policy = Policy.FromJson(Json.Write(policy, false)) };
             if (root.TryGetValue("serial", out object s) && s is double serial && serial >= 0 && serial < 9e15)
             {
                 content.Serial = (long)serial;
             }
             return content;
-        }
-
-        /// <summary>
-        /// Reads the content of a store file without checking its seal. The app and
-        /// the uninstaller use this to show the policy and to check a password when
-        /// the service is not running. Returns null when the file cannot be read.
-        /// </summary>
-        public static StoreContent ReadUnverified(string storePath)
-        {
-            foreach (string candidate in new[] { storePath, storePath + ".bak" })
-            {
-                try
-                {
-                    if (!File.Exists(candidate)) continue;
-                    if (!SplitSealed(ReadAll(candidate), out byte[] _, out byte[] payload)) continue;
-                    return ParsePayload(Encoding.UTF8.GetString(payload));
-                }
-                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
-                                           ex is FormatException)
-                {
-                }
-            }
-            return null;
         }
 
         // ---------- save ----------
@@ -265,44 +276,47 @@ namespace Lotus.Core
         {
             if (content == null) throw new ArgumentNullException(nameof(content));
             Directory.CreateDirectory(directory);
-            if (key == null) key = CreateKey();
+            if (key == null) key = Secrets.RandomBytes(32);
 
             content.Serial++;
-            var root = new Dictionary<string, object>
+            var record = new Dictionary<string, object>
             {
-                ["serial"] = (double)content.Serial,
-                ["policy"] = Json.Parse(content.Policy.ToJson()),
-                ["password"] = content.Password?.ToJsonObject()
+                ["policy"] = Json.Parse(content.Policy.ToJson())
             };
-            byte[] payload = Encoding.UTF8.GetBytes(Json.Write(root));
-            byte[] mac;
-            using (var hmac = new HMACSHA256(key)) mac = hmac.ComputeHash(payload);
-
-            byte[] head = Encoding.ASCII.GetBytes(Header + "\n" + Convert.ToBase64String(mac) + "\n");
-            var bytes = new byte[head.Length + payload.Length];
-            Buffer.BlockCopy(head, 0, bytes, 0, head.Length);
-            Buffer.BlockCopy(payload, 0, bytes, head.Length, payload.Length);
+            byte[] bytes = SealedBox.Seal(key, SealedBox.KindPolicy, content.Serial, ObjectCodec.Encode(record));
 
             WriteFile(PendingPath, bytes);
             EnsureKeyOnDisk();
-            if (File.Exists(StorePath))
+            Replace(PendingPath, StorePath, BackupPath);
+            if (oldFormatSeen)
+            {
+                // The copy that was just pushed aside is the readable 1.1 store.
+                // Do not leave it lying around.
+                File.Copy(StorePath, BackupPath, true);
+                oldFormatSeen = false;
+            }
+            lastWritten = bytes;
+        }
+
+        private static void Replace(string pending, string target, string backup)
+        {
+            if (File.Exists(target))
             {
                 try
                 {
-                    File.Replace(PendingPath, StorePath, BackupPath, true);
+                    File.Replace(pending, target, backup, true);
                 }
-                catch (IOException)
+                catch (Exception ex) when (ex is IOException || ex is PlatformNotSupportedException)
                 {
-                    File.Copy(StorePath, BackupPath, true);
-                    File.Delete(StorePath);
-                    File.Move(PendingPath, StorePath);
+                    File.Copy(target, backup, true);
+                    File.Delete(target);
+                    File.Move(pending, target);
                 }
             }
             else
             {
-                File.Move(PendingPath, StorePath);
+                File.Move(pending, target);
             }
-            lastWritten = bytes;
         }
 
         private static void WriteFile(string path, byte[] bytes)
@@ -336,7 +350,7 @@ namespace Lotus.Core
                 }
                 if (!File.Exists(KeyPath))
                 {
-                    problem = "The seal key was deleted.";
+                    problem = "The key of the policy store was deleted.";
                     return false;
                 }
                 return true;
@@ -349,7 +363,72 @@ namespace Lotus.Core
             }
         }
 
-        // ---------- the seal key ----------
+        /// <summary>
+        /// Throws away a policy store that cannot be trusted, so that LOTUS starts
+        /// again as on a new PC. The key and the list of blocked devices stay when
+        /// they are still readable, so devices LOTUS switched off can be switched
+        /// back on.
+        /// </summary>
+        public void ResetPolicy()
+        {
+            Delete(StorePath, BackupPath, PendingPath);
+            lastWritten = null;
+            oldFormatSeen = false;
+            if (key == null) Delete(KeyPath, KeyPath + ".tmp");
+        }
+
+        // ---------- the list of blocked devices ----------
+
+        /// <summary>
+        /// Loads the ledger. A missing file is an empty ledger. error is set when a
+        /// file was there but could not be trusted or read.
+        /// </summary>
+        public Ledger LoadLedger(out string error)
+        {
+            error = null;
+            if (key != null)
+            {
+                foreach (string candidate in new[] { LedgerPath, LedgerPath + ".tmp", LedgerPath + ".bak" })
+                {
+                    try
+                    {
+                        if (!File.Exists(candidate)) continue;
+                        byte[] plain = SealedBox.Open(key, SealedBox.KindLedger, ReadAll(candidate), out long _);
+                        Dictionary<string, object> record = Json.AsObject(ObjectCodec.Decode(plain));
+                        if (record == null) throw new FormatException("it holds no record.");
+                        return Ledger.FromJson(Json.Write(record, false));
+                    }
+                    catch (Exception ex) when (ex is FormatException || ex is IOException ||
+                                               ex is UnauthorizedAccessException)
+                    {
+                        error = (error == null ? "" : error + " ") + Path.GetFileName(candidate) + ": " + ex.Message;
+                    }
+                }
+            }
+            else if (File.Exists(LedgerPath) || File.Exists(LedgerPath + ".bak"))
+            {
+                error = "The list of blocked devices cannot be read without the key of the policy store.";
+            }
+            return new Ledger();
+        }
+
+        public void SaveLedger(Ledger ledger)
+        {
+            if (ledger == null) throw new ArgumentNullException(nameof(ledger));
+            Directory.CreateDirectory(directory);
+            if (key == null)
+            {
+                key = Secrets.RandomBytes(32);
+            }
+            EnsureKeyOnDisk();
+            object record = Json.Parse(ledger.ToJson());
+            byte[] bytes = SealedBox.Seal(key, SealedBox.KindLedger, 0, ObjectCodec.Encode(record));
+            string pending = LedgerPath + ".tmp";
+            WriteFile(pending, bytes);
+            Replace(pending, LedgerPath, LedgerPath + ".bak");
+        }
+
+        // ---------- the key ----------
 
         private byte[] ReadKey(out string problem)
         {
@@ -357,11 +436,10 @@ namespace Lotus.Core
             try
             {
                 if (!File.Exists(KeyPath)) return null;
-                byte[] sealedKey = ReadAll(KeyPath);
-                byte[] plain = ProtectedData.Unprotect(sealedKey, KeyEntropy, DataProtectionScope.LocalMachine);
-                if (plain.Length != 32)
+                byte[] plain = KeyWrap.Unwrap(ReadAll(KeyPath));
+                if (plain == null || plain.Length != 32)
                 {
-                    problem = "The seal key has the wrong length.";
+                    problem = "The key has the wrong length.";
                     return null;
                 }
                 return plain;
@@ -374,11 +452,6 @@ namespace Lotus.Core
             }
         }
 
-        private static byte[] CreateKey()
-        {
-            return Secrets.RandomBytes(32);
-        }
-
         private void EnsureKeyOnDisk()
         {
             if (File.Exists(KeyPath))
@@ -386,7 +459,7 @@ namespace Lotus.Core
                 byte[] onDisk = ReadKey(out string _);
                 if (onDisk != null && Secrets.FixedTimeEquals(onDisk, key)) return;
             }
-            byte[] sealedKey = ProtectedData.Protect(key, KeyEntropy, DataProtectionScope.LocalMachine);
+            byte[] wrapped = KeyWrap.Wrap(key);
             string temp = KeyPath + ".tmp";
             if (File.Exists(temp)) File.Delete(temp);
             if (KeyFileSecurity != null)
@@ -395,22 +468,30 @@ namespace Lotus.Core
                            System.Security.AccessControl.FileSystemRights.Write, FileShare.None, 4096,
                            FileOptions.None, KeyFileSecurity()))
                 {
-                    stream.Write(sealedKey, 0, sealedKey.Length);
+                    stream.Write(wrapped, 0, wrapped.Length);
                     stream.Flush(true);
                 }
             }
             else
             {
-                WriteFile(temp, sealedKey);
+                WriteFile(temp, wrapped);
             }
             if (File.Exists(KeyPath)) File.Delete(KeyPath);
             File.Move(temp, KeyPath);
         }
 
-        /// <summary>Forgets the files. Used when LOTUS is uninstalled.</summary>
+        /// <summary>Forgets every file. Used when LOTUS is uninstalled.</summary>
         public void Erase()
         {
-            foreach (string path in new[] { StorePath, BackupPath, PendingPath, KeyPath, KeyPath + ".tmp" })
+            Delete(StorePath, BackupPath, PendingPath, KeyPath, KeyPath + ".tmp", LedgerPath, LedgerPath + ".bak",
+                LedgerPath + ".tmp", OldLedgerPath, OldLedgerPath + ".bak", OldLedgerPath + ".tmp");
+            key = null;
+            lastWritten = null;
+        }
+
+        private static void Delete(params string[] paths)
+        {
+            foreach (string path in paths)
             {
                 try
                 {
@@ -420,8 +501,41 @@ namespace Lotus.Core
                 {
                 }
             }
-            key = null;
-            lastWritten = null;
+        }
+    }
+
+    /// <summary>How the store key is wrapped before it is written to disk.</summary>
+    public interface IKeyWrap
+    {
+        byte[] Wrap(byte[] key);
+        /// <summary>Throws CryptographicException or FormatException when the bytes are not a wrapped key.</summary>
+        byte[] Unwrap(byte[] wrapped);
+    }
+
+    public static class PlatformKeyWrap
+    {
+        public static IKeyWrap Create()
+        {
+            return new MachineKeyWrap();
+        }
+    }
+
+    /// <summary>
+    /// Windows: the key is wrapped by the data protection service with the
+    /// machine's own secret, so the key file cannot be used on another PC.
+    /// </summary>
+    public sealed class MachineKeyWrap : IKeyWrap
+    {
+        private static readonly byte[] Entropy = Encoding.ASCII.GetBytes("LOTUS seal key v1");
+
+        public byte[] Wrap(byte[] key)
+        {
+            return ProtectedData.Protect(key, Entropy, DataProtectionScope.LocalMachine);
+        }
+
+        public byte[] Unwrap(byte[] wrapped)
+        {
+            return ProtectedData.Unprotect(wrapped, Entropy, DataProtectionScope.LocalMachine);
         }
     }
 }

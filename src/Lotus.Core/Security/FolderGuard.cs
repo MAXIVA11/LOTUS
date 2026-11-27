@@ -134,6 +134,78 @@ namespace Lotus.Core
             File.Delete(path);
         }
 
+        /// <summary>
+        /// Gives administrators full control of the store folder and the files in
+        /// it, next to the service. This is for the rescue command that has to
+        /// work when the service does not run. The service puts the usual rules
+        /// back the next time it starts. Returns false when it did not work,
+        /// which is what happens without administrator rights.
+        /// </summary>
+        public static bool OpenForAdministrators(string directory)
+        {
+            EnablePrivilege("SeTakeOwnershipPrivilege");
+            EnablePrivilege("SeRestorePrivilege");
+            EnablePrivilege("SeBackupPrivilege");
+            try
+            {
+                if (!Directory.Exists(directory) || IsReparsePoint(directory)) return false;
+                try
+                {
+                    var owner = new DirectorySecurity();
+                    owner.SetOwner(Administrators);
+                    Directory.SetAccessControl(directory, owner);
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                           ex is InvalidOperationException)
+                {
+                }
+                Directory.SetAccessControl(directory, WorkingAccess());
+
+                foreach (string entry in Directory.GetFileSystemEntries(directory))
+                {
+                    if (IsReparsePoint(entry) || Directory.Exists(entry)) continue;
+                    try
+                    {
+                        var owner = new FileSecurity();
+                        owner.SetOwner(Administrators);
+                        File.SetAccessControl(entry, owner);
+                    }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                               ex is InvalidOperationException)
+                    {
+                    }
+                    var access = new FileSecurity();
+                    access.SetAccessRuleProtection(true, false);
+                    access.AddAccessRule(new FileSystemAccessRule(LocalSystem, FileSystemRights.FullControl,
+                        AccessControlType.Allow));
+                    access.AddAccessRule(new FileSystemAccessRule(Administrators, FileSystemRights.FullControl,
+                        AccessControlType.Allow));
+                    File.SetAccessControl(entry, access);
+                }
+
+                string probe = Path.Combine(directory, "open-" + Guid.NewGuid().ToString("N") + ".tmp");
+                File.WriteAllBytes(probe, new byte[0]);
+                File.Delete(probe);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                       ex is InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        private static DirectorySecurity WorkingAccess()
+        {
+            var access = new DirectorySecurity();
+            access.SetAccessRuleProtection(true, false);
+            access.AddAccessRule(new FileSystemAccessRule(LocalSystem, FileSystemRights.FullControl, Inherit,
+                PropagationFlags.None, AccessControlType.Allow));
+            access.AddAccessRule(new FileSystemAccessRule(Administrators, FileSystemRights.FullControl, Inherit,
+                PropagationFlags.None, AccessControlType.Allow));
+            return access;
+        }
+
         public static bool IsReparsePoint(string path)
         {
             try
@@ -207,6 +279,10 @@ namespace Lotus.Core
         /// <param name="skip">Names directly inside the folder that keep their own, stricter rules.</param>
         public static void Apply(string directory, DirectorySecurity rules, params string[] skip)
         {
+            // The service holds these rights but does not use them by default.
+            // They let it put the rules back on a folder someone took over.
+            EnablePrivilege("SeTakeOwnershipPrivilege");
+            EnablePrivilege("SeRestorePrivilege");
             Directory.SetAccessControl(directory, rules);
             foreach (string entry in Directory.GetFileSystemEntries(directory))
             {

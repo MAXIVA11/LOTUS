@@ -21,7 +21,7 @@
          pieces it shares with the service are compiled in. -->
     <Compile Include="..\Lotus.Core\Json.cs" Link="Shared\Json.cs" />
     <Compile Include="..\Lotus.Core\Security\GuardClient.cs" Link="Shared\GuardClient.cs" />
-    <Compile Include="..\Lotus.Core\Security\Passwords.cs" Link="Shared\Passwords.cs" />
+    <Compile Include="..\Lotus.Core\Security\ResetRequest.cs" Link="Shared\ResetRequest.cs" />
     <Compile Include="..\Lotus.Core\Security\FolderGuard.cs" Link="Shared\FolderGuard.cs" />
     <Resource Include="..\Lotus.App\Assets\lotus.ico" Link="Assets\lotus.ico" />
     <EmbeddedResource Include="$(PayloadZip)" LogicalName="payload.zip" Condition="Exists('$(PayloadZip)')" />

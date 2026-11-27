@@ -19,15 +19,18 @@ namespace Lotus.Core
         public bool HardenFolders = true;
         /// <summary>Ask Windows to report device changes. Off in tests, which drive the loop by hand.</summary>
         public bool WatchDevices = true;
-        /// <summary>How much work a new password hash costs. Tests lower it to stay fast.</summary>
-        public int PasswordIterations = PasswordRecord.DefaultIterations;
+        /// <summary>
+        /// Asks whether setup wants a damaged policy store thrown away, and forgets
+        /// the request. Tests put their own answer in.
+        /// </summary>
+        public Func<bool> TakeResetRequest = ResetRequest.Take;
     }
 
     /// <summary>
     /// The loop behind the LotusGuard service. It decides about a device the
     /// instant Windows reports it, runs a full enforcement pass every two seconds
-    /// and after every change, owns the sealed policy store, and answers the
-    /// control pipe through which the app asks for policy changes.
+    /// and after every change, owns the encrypted policy store, and answers the
+    /// control pipe through which the app reads and changes the policy.
     /// </summary>
     public sealed class GuardWorker : IDisposable
     {
@@ -37,7 +40,6 @@ namespace Lotus.Core
         // for the first ten seconds, instead of waiting for the next regular pass.
         private static readonly TimeSpan RetryInterval = TimeSpan.FromMilliseconds(250);
         private const int QuickRetries = 40;
-        private const int FreeAttempts = 5;
 
         private sealed class PendingCommand
         {
@@ -65,16 +67,14 @@ namespace Lotus.Core
         private bool lockdown;
         private Enforcer enforcer;
         private bool markAbsentDue = true;
-        private int wrongPasswords;
-        private DateTime lockedUntil = DateTime.MinValue;
         private string stopPurpose;
         private string lastPassError;
         private string lastSystemDiskError;
         private string lastStatus;
 
         /// <summary>
-        /// Raised after a stop that came in over the control pipe with the right
-        /// password. The service host reacts by stopping the service.
+        /// Raised after setup asked over the control pipe for the service to stop.
+        /// The service host reacts by stopping the service.
         /// </summary>
         public event Action<string> StopRequested;
 
@@ -360,6 +360,17 @@ namespace Lotus.Core
             store = new SecureStore(LotusPaths.SecureDir, LotusPaths.LegacyPolicyFile);
             if (options.HardenFolders) store.KeyFileSecurity = FolderGuard.KeyFileRules;
             StoreLoad loaded = store.Load();
+
+            bool resetAsked = options.TakeResetRequest != null && options.TakeResetRequest();
+            if (loaded.State == StoreState.Tampered && resetAsked)
+            {
+                // Setup was run again on a locked-down PC. That is the way out:
+                // the store that cannot be trusted goes, and LOTUS starts disarmed.
+                log.Write(EventTypes.Tamper, "The policy store could not be trusted. " + loaded.Problem +
+                                             " Setup asked for a reset, so LOTUS starts again disarmed.");
+                store.ResetPolicy();
+                loaded = new StoreLoad { State = StoreState.Fresh };
+            }
             content = loaded.Content;
 
             switch (loaded.State)
@@ -370,7 +381,7 @@ namespace Lotus.Core
                 case StoreState.Legacy:
                     if (loaded.Problem != null)
                     {
-                        log.Write(EventTypes.Error, "The policy file from the earlier version could not be read. " +
+                        log.Write(EventTypes.Error, "The policy from the earlier version could not be read in full. " +
                                                     loaded.Problem);
                     }
                     if (SaveStore())
@@ -378,7 +389,7 @@ namespace Lotus.Core
                         DeleteQuietly(LotusPaths.LegacyPolicyFile, PolicyStore.BackupPath(LotusPaths.LegacyPolicyFile),
                             LotusPaths.LegacyPolicyFile + ".tmp");
                         log.Write(EventTypes.PolicyChanged,
-                            "The policy from the earlier version was moved into the sealed policy store.");
+                            "The policy from the earlier version was moved into the encrypted policy store.");
                     }
                     break;
                 case StoreState.Restored:
@@ -438,16 +449,24 @@ namespace Lotus.Core
 
         private Ledger LoadLedger()
         {
-            string path = LotusPaths.LedgerFile;
-            string legacy = LotusPaths.LegacyLedgerFile;
-            bool fromLegacy = !File.Exists(path) && !File.Exists(path + ".bak") &&
-                              (File.Exists(legacy) || File.Exists(legacy + ".bak"));
-            Ledger ledger = Ledger.Load(fromLegacy ? legacy : path, out string error);
-            if (error != null) log.Write(EventTypes.Error, "The block ledger could not be read. " + error);
-            if (fromLegacy)
+            Ledger ledger = store.LoadLedger(out string error);
+            if (error != null) log.Write(EventTypes.Error, "The list of blocked devices could not be read. " + error);
+            if (File.Exists(store.LedgerPath) || File.Exists(store.LedgerPath + ".bak")) return ledger;
+
+            // Nothing in the encrypted form yet. LOTUS 1.1 kept the list as a
+            // readable file in the protected folder, and 1.0 in the open one.
+            foreach (string old in new[] { store.OldLedgerPath, LotusPaths.LegacyLedgerFile })
             {
+                if (!File.Exists(old) && !File.Exists(old + ".bak")) continue;
+                ledger = Ledger.Load(old, out string oldError);
+                if (oldError != null)
+                {
+                    log.Write(EventTypes.Error, "The list of blocked devices from the earlier version could not be read. " +
+                                                oldError);
+                }
                 SaveLedger(ledger);
-                if (File.Exists(path)) DeleteQuietly(legacy, legacy + ".bak", legacy + ".tmp");
+                if (File.Exists(store.LedgerPath)) DeleteQuietly(old, old + ".bak", old + ".tmp");
+                break;
             }
             return ledger;
         }
@@ -456,11 +475,12 @@ namespace Lotus.Core
         {
             try
             {
-                ledger.Save(LotusPaths.LedgerFile);
+                store.SaveLedger(ledger);
             }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                       ex is System.Security.Cryptography.CryptographicException)
             {
-                log.Write(EventTypes.Error, "The block ledger could not be saved. " + ex.Message);
+                log.Write(EventTypes.Error, "The list of blocked devices could not be saved. " + ex.Message);
             }
         }
 
@@ -504,9 +524,6 @@ namespace Lotus.Core
                 {
                     ["version"] = LotusPaths.Version,
                     ["armed"] = policy.Armed,
-                    ["storage"] = Policy.StorageToText(policy.Storage),
-                    ["pnp"] = policy.Pnp == PnpMode.Block ? "block" : "allow",
-                    ["hasPassword"] = content.Password != null,
                     ["lockdown"] = lockdown
                 });
                 if (text == lastStatus && File.Exists(LotusPaths.StatusFile)) return;
@@ -550,19 +567,16 @@ namespace Lotus.Core
         private Dictionary<string, object> Handle(Dictionary<string, object> request)
         {
             string op = Json.GetString(request, "op", "");
-            string password = Json.GetString(request, "password", "");
             switch (op)
             {
                 case GuardProtocol.OpStatus:
                     return Accept();
-                case GuardProtocol.OpVerify:
-                    return Authorize(password) ?? Accept();
+                case GuardProtocol.OpRead:
+                    return ReadState();
                 case GuardProtocol.OpApply:
-                    return ApplyPolicy(request, password);
-                case GuardProtocol.OpSetPassword:
-                    return ChangePassword(password, Json.GetString(request, "newPassword", ""));
+                    return ApplyPolicy(request);
                 case GuardProtocol.OpStop:
-                    return StopForSetup(password, Json.GetString(request, "purpose", ""));
+                    return StopForSetup(Json.GetString(request, "purpose", ""));
                 default:
                     return Refuse(GuardProtocol.ErrBadRequest, "LOTUS Guard does not know the request \"" +
                                                                TextSafety.Clean(op, 40) + "\".");
@@ -571,7 +585,6 @@ namespace Lotus.Core
 
         private Dictionary<string, object> Accept(string message = "")
         {
-            int retry = lockedUntil > DateTime.UtcNow ? (int)Math.Ceiling((lockedUntil - DateTime.UtcNow).TotalSeconds) : 0;
             return new Dictionary<string, object>
             {
                 ["ok"] = true,
@@ -579,9 +592,7 @@ namespace Lotus.Core
                 ["message"] = message,
                 ["version"] = LotusPaths.Version,
                 ["armed"] = policy.Armed,
-                ["hasPassword"] = content.Password != null,
-                ["lockdown"] = lockdown,
-                ["retryAfter"] = retry
+                ["lockdown"] = lockdown
             };
         }
 
@@ -593,39 +604,17 @@ namespace Lotus.Core
             return reply;
         }
 
-        /// <summary>Checks the password. Returns null when it is right, or the refusal to send back.</summary>
-        private Dictionary<string, object> Authorize(string password)
+        /// <summary>
+        /// The policy in force and the list of blocked devices. The files they are
+        /// kept in cannot be read by anyone but the service, so the app and the
+        /// command line ask for them here.
+        /// </summary>
+        private Dictionary<string, object> ReadState()
         {
-            if (content.Password == null) return null;
-
-            DateTime now = DateTime.UtcNow;
-            if (now < lockedUntil)
-            {
-                int seconds = (int)Math.Ceiling((lockedUntil - now).TotalSeconds);
-                return Refuse(GuardProtocol.ErrLockedOut,
-                    "Too many wrong passwords. Try again in " + seconds + (seconds == 1 ? " second." : " seconds."));
-            }
-            if (string.IsNullOrEmpty(password))
-            {
-                return Refuse(GuardProtocol.ErrPasswordNeeded, "Enter the LOTUS password.");
-            }
-            if (content.Password.Verify(password))
-            {
-                wrongPasswords = 0;
-                return null;
-            }
-
-            wrongPasswords++;
-            log.Write(EventTypes.Security, "A wrong LOTUS password was entered.");
-            if (wrongPasswords >= FreeAttempts)
-            {
-                // 30 seconds, then a minute, then two, up to a quarter of an hour.
-                double seconds = Math.Min(900, 30 * Math.Pow(2, wrongPasswords - FreeAttempts));
-                lockedUntil = DateTime.UtcNow.AddSeconds(seconds);
-                log.Write(EventTypes.Security, "Too many wrong passwords. Password entry is paused for " +
-                                               (int)seconds + " seconds.");
-            }
-            return Refuse(GuardProtocol.ErrWrongPassword, "That is not the LOTUS password.");
+            Dictionary<string, object> reply = Accept();
+            reply["policy"] = Json.Parse(policy.ToJson());
+            reply["ledger"] = Json.Parse(enforcer.Ledger.ToJson());
+            return reply;
         }
 
         private Dictionary<string, object> RefuseLockdown()
@@ -634,7 +623,7 @@ namespace Lotus.Core
                 "LOTUS is locked down because its policy store was damaged. Run LOTUS-Setup again to reset it.");
         }
 
-        private Dictionary<string, object> ApplyPolicy(Dictionary<string, object> request, string password)
+        private Dictionary<string, object> ApplyPolicy(Dictionary<string, object> request)
         {
             if (lockdown) return RefuseLockdown();
 
@@ -651,28 +640,7 @@ namespace Lotus.Core
                 return Refuse(GuardProtocol.ErrBadRequest, "The policy was not accepted. " + ex.Message);
             }
 
-            Dictionary<string, object> refusal = Authorize(password);
-            if (refusal != null) return refusal;
-
-            PasswordRecord record = content.Password;
-            string newPassword = Json.GetString(request, "newPassword", "");
-            if (record == null)
-            {
-                // An armed policy without a password would protect nothing.
-                if (next.Armed && newPassword.Length == 0)
-                {
-                    return Refuse(GuardProtocol.ErrNewPasswordNeeded,
-                        "Choose a LOTUS password before arming. It is needed for every later change.");
-                }
-                if (newPassword.Length > 0)
-                {
-                    string problem = PasswordRecord.Problem(newPassword);
-                    if (problem != null) return Refuse(GuardProtocol.ErrWeakPassword, problem);
-                    record = PasswordRecord.Create(newPassword, options.PasswordIterations);
-                }
-            }
-
-            var updated = new StoreContent { Policy = next, Password = record, Serial = content.Serial };
+            var updated = new StoreContent { Policy = next, Serial = content.Serial };
             StoreContent previous = content;
             content = updated;
             if (!SaveStore())
@@ -681,10 +649,6 @@ namespace Lotus.Core
                 return Refuse(GuardProtocol.ErrFailed, "The policy could not be saved. See the activity log.");
             }
 
-            if (previous.Password == null && record != null)
-            {
-                log.Write(EventTypes.Security, "A LOTUS password was set.");
-            }
             policy = next;
             markAbsentDue = true;
             Interlocked.Exchange(ref fullSoon, 1);
@@ -693,46 +657,11 @@ namespace Lotus.Core
             return Accept();
         }
 
-        private Dictionary<string, object> ChangePassword(string password, string newPassword)
-        {
-            if (lockdown) return RefuseLockdown();
-            Dictionary<string, object> refusal = Authorize(password);
-            if (refusal != null) return refusal;
-
-            string problem = PasswordRecord.Problem(newPassword);
-            if (problem != null) return Refuse(GuardProtocol.ErrWeakPassword, problem);
-
-            bool had = content.Password != null;
-            StoreContent previous = content;
-            content = new StoreContent
-            {
-                Policy = content.Policy,
-                Password = PasswordRecord.Create(newPassword, options.PasswordIterations),
-                Serial = content.Serial
-            };
-            if (!SaveStore())
-            {
-                content = previous;
-                return Refuse(GuardProtocol.ErrFailed, "The password could not be saved. See the activity log.");
-            }
-            log.Write(EventTypes.Security, had ? "The LOTUS password was changed." : "A LOTUS password was set.");
-            WriteStatus();
-            return Accept();
-        }
-
-        private Dictionary<string, object> StopForSetup(string password, string purpose)
+        private Dictionary<string, object> StopForSetup(string purpose)
         {
             if (purpose != GuardProtocol.PurposeUpdate && purpose != GuardProtocol.PurposeUninstall)
             {
                 return Refuse(GuardProtocol.ErrBadRequest, "The stop request does not say what it is for.");
-            }
-            // In lockdown the password record is gone with the store. Removing or
-            // reinstalling LOTUS is the only way out, so it is not held behind a
-            // password nobody can check any more.
-            if (!lockdown)
-            {
-                Dictionary<string, object> refusal = Authorize(password);
-                if (refusal != null) return refusal;
             }
 
             if (purpose == GuardProtocol.PurposeUninstall)
@@ -740,8 +669,7 @@ namespace Lotus.Core
                 log.Write(EventTypes.Security, "LOTUS is being removed. Every blocked device is switched back on.");
                 int problems = enforcer.ReleaseEverything();
                 store.Erase();
-                DeleteQuietly(LotusPaths.LedgerFile, LotusPaths.LedgerFile + ".bak", LotusPaths.LedgerFile + ".tmp",
-                    LotusPaths.StatusFile);
+                DeleteQuietly(LotusPaths.StatusFile);
                 if (options.HardenFolders) LetAdministratorsDelete();
                 stopPurpose = purpose;
                 Dictionary<string, object> reply = Accept(problems == 0

@@ -20,7 +20,7 @@ namespace Lotus.Core
         public const string Error = "error";
         /// <summary>Someone or something interfered with LOTUS itself.</summary>
         public const string Tamper = "tamper";
-        /// <summary>Password events: set, changed, entered wrongly.</summary>
+        /// <summary>Things setup asked the service to do: stop for an update, remove LOTUS.</summary>
         public const string Security = "security";
     }
 

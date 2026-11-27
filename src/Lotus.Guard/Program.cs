@@ -26,7 +26,7 @@ namespace Lotus.Guard
                 case "--console":
                     return RunConsole(args.Length >= 3 && args[1].ToLowerInvariant() == "--dev" ? args[2] : null);
                 case "--scan":
-                    return Scan();
+                    return Scan(args.Length >= 2 && args[1].ToLowerInvariant() == "--dev");
                 case "--release-all":
                     try
                     {
@@ -53,8 +53,9 @@ namespace Lotus.Guard
             Console.WriteLine("  LotusGuard --console --dev <folder>");
             Console.WriteLine("                             For developers: keep all data in <folder> and listen on a");
             Console.WriteLine("                             separate pipe. Leaves the installed LOTUS alone.");
-            Console.WriteLine("  LotusGuard --release-all   Switch every blocked device back on and lift read-only mode.");
-            Console.WriteLine("                             Asks for the LOTUS password when one is set.");
+            Console.WriteLine("  LotusGuard --release-all   Disarm LOTUS, switch every blocked device back on and lift");
+            Console.WriteLine("                             read-only mode. Works in Safe Mode too, where the service");
+            Console.WriteLine("                             does not run. Needs an administrator command prompt.");
         }
 
         private static int RunConsole(string devFolder)
@@ -82,21 +83,40 @@ namespace Lotus.Guard
             return 0;
         }
 
-        private static int Scan()
+        private static int Scan(bool dev)
         {
-            StoreContent stored = SecureStore.ReadUnverified(LotusPaths.StoreFile);
-            string source = stored != null ? "Store" : "Default";
-            Policy policy = stored?.Policy;
-            if (policy == null)
+            // The policy and the list of blocked devices are in files only the
+            // service can read, so the service is asked for them.
+            Policy policy = new Policy();
+            var ledger = new Ledger();
+            string source = "Unknown";
+            bool lockdown = false;
+            string guard;
+            try
             {
-                // Before the service has started for the first time after an update
-                // from LOTUS 1.0, the old policy file is still the one that counts.
-                PolicyLoadResult legacy = PolicyStore.Load(LotusPaths.LegacyPolicyFile);
-                policy = legacy.Policy;
-                if (legacy.Source != PolicySource.Default) source = "Legacy";
+                GuardClient client = dev
+                    ? new GuardClient(GuardProtocol.DevPipeName, false)
+                    : new GuardClient();
+                GuardReply reply = client.Read();
+                guard = reply.Ok ? "answering" : "refused: " + reply.Message;
+                if (reply.Ok)
+                {
+                    policy = reply.ReadPolicy() ?? new Policy();
+                    ledger = reply.ReadLedger();
+                    lockdown = reply.Lockdown;
+                    source = "Service";
+                }
             }
+            catch (GuardUnavailableException ex)
+            {
+                guard = "not answering: " + ex.Message;
+            }
+            catch (FormatException ex)
+            {
+                guard = "sent something unreadable: " + ex.Message;
+            }
+            if (lockdown) policy = GuardWorker.LockdownPolicy();
 
-            Ledger ledger = Ledger.Load(LotusPaths.LedgerFile, out string _);
             var backend = new WindowsDeviceBackend();
             var list = new List<object>();
             foreach (UsbDevice device in backend.Scan())
@@ -123,9 +143,14 @@ namespace Lotus.Guard
             }
             Console.WriteLine(Json.Write(new Dictionary<string, object>
             {
-                ["policy"] = GuardWorker.Summarize(policy),
+                ["policy"] = source == "Unknown"
+                    ? "unknown, because LOTUS Guard is not answering."
+                    : GuardWorker.Summarize(policy),
                 ["policySource"] = source,
-                ["hasPassword"] = stored?.Password != null,
+                ["guard"] = guard,
+                ["lockdown"] = lockdown,
+                ["armed"] = policy.Armed,
+                ["trusted"] = policy.Trusted.Count,
                 ["ledgerEntries"] = ledger.Count,
                 ["systemDiskError"] = backend.SystemDiskError,
                 ["devices"] = list
@@ -133,50 +158,114 @@ namespace Lotus.Guard
             return 0;
         }
 
+        /// <summary>
+        /// The way out for someone who locked themselves out: LOTUS is disarmed
+        /// and everything it switched off is switched back on.
+        /// </summary>
         private static int ReleaseAll()
         {
-            // This switches every blocked device back on, so it is held behind the
-            // same password as the policy.
-            StoreContent stored = SecureStore.ReadUnverified(LotusPaths.StoreFile);
-            if (stored?.Password != null)
+            // With the service running, ask it. It owns the policy and the devices.
+            try
             {
-                string password = Environment.GetEnvironmentVariable("LOTUS_PASSWORD");
-                if (string.IsNullOrEmpty(password)) password = ReadPassword("LOTUS password: ");
-                if (!stored.Password.Verify(password))
+                var client = new GuardClient();
+                GuardReply state = client.Read();
+                if (state.Ok)
                 {
-                    new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile)
-                        .Write(EventTypes.Security, "A wrong LOTUS password was entered for --release-all.");
-                    Console.WriteLine("That is not the LOTUS password. Nothing was changed.");
-                    return 3;
+                    Policy policy = state.ReadPolicy() ?? new Policy();
+                    policy.Armed = false;
+                    GuardReply applied = client.Apply(policy.ToJson());
+                    if (!applied.Ok)
+                    {
+                        Console.WriteLine("LOTUS Guard refused. " + applied.Message);
+                        return 1;
+                    }
+                    for (int attempt = 0; attempt < 60; attempt++)
+                    {
+                        if (client.Read().ReadLedger().Count == 0)
+                        {
+                            Console.WriteLine("LOTUS is disarmed. Every blocked device is switched back on.");
+                            return 0;
+                        }
+                        Thread.Sleep(500);
+                    }
+                    Console.WriteLine("LOTUS is disarmed, but some devices are not back on yet. See the activity log.");
+                    return 1;
+                }
+                if (state.Lockdown)
+                {
+                    Console.WriteLine("LOTUS is locked down. Run LOTUS-Setup again to reset it.");
+                    return 1;
+                }
+            }
+            catch (GuardUnavailableException)
+            {
+                // Not running: Safe Mode, or a stopped service. Do it by hand below.
+            }
+            catch (FormatException)
+            {
+            }
+            return ReleaseWithoutService();
+        }
+
+        /// <summary>
+        /// Without the service, the store has to be opened here. Only the service
+        /// account may read it, so this takes the folder over first. That needs
+        /// administrator rights, and the service puts the permissions back the
+        /// next time it starts.
+        /// </summary>
+        private static int ReleaseWithoutService()
+        {
+            var log = new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile);
+            var store = new SecureStore(LotusPaths.SecureDir, LotusPaths.LegacyPolicyFile);
+            if (Directory.Exists(LotusPaths.SecureDir) && !FolderGuard.OpenForAdministrators(LotusPaths.SecureDir))
+            {
+                Console.WriteLine("Could not open the LOTUS store. Run this from an administrator command prompt.");
+                return 1;
+            }
+
+            StoreLoad loaded = store.Load();
+            bool disarmed = false;
+            if (loaded.State == StoreState.Ok || loaded.State == StoreState.Restored || loaded.State == StoreState.Legacy)
+            {
+                try
+                {
+                    loaded.Content.Policy.Armed = false;
+                    store.Save(loaded.Content);
+                    disarmed = true;
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                           ex is System.Security.Cryptography.CryptographicException)
+                {
+                    Console.WriteLine("Warning: the policy could not be saved as disarmed. " + ex.Message);
                 }
             }
 
-            var log = new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile);
-            // A PC that was updated from 1.0 and never ran the new service still
-            // has its ledger in the old place.
-            string ledgerFile = LotusPaths.LedgerFile;
-            if (!File.Exists(ledgerFile) && !File.Exists(ledgerFile + ".bak") &&
-                (File.Exists(LotusPaths.LegacyLedgerFile) || File.Exists(LotusPaths.LegacyLedgerFile + ".bak")))
-            {
-                ledgerFile = LotusPaths.LegacyLedgerFile;
-            }
-            Ledger ledger = Ledger.Load(ledgerFile, out string error);
+            Ledger ledger = store.LoadLedger(out string error);
             if (error != null) Console.WriteLine("Warning: " + error);
+            if (ledger.Count == 0 && !File.Exists(store.LedgerPath))
+            {
+                // A PC that was updated and never ran the new service still has
+                // its list where the earlier version kept it.
+                foreach (string old in new[] { store.OldLedgerPath, LotusPaths.LegacyLedgerFile })
+                {
+                    if (!File.Exists(old) && !File.Exists(old + ".bak")) continue;
+                    ledger = Ledger.Load(old, out string oldError);
+                    if (oldError != null) Console.WriteLine("Warning: " + oldError);
+                    break;
+                }
+            }
 
-            // Only the service may write the ledger. Run by an administrator, this
-            // command still switches the devices back on. The service drops the
-            // entries itself the next time it starts and finds them released.
-            bool ledgerSaved = true;
             var enforcer = new Enforcer(new WindowsDeviceBackend(), new RegistryReadOnlyPolicy(), ledger,
                 l =>
                 {
                     try
                     {
-                        l.Save(ledgerFile);
+                        store.SaveLedger(l);
                     }
-                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                               ex is System.Security.Cryptography.CryptographicException)
                     {
-                        ledgerSaved = false;
+                        // The devices are back on all the same. The service tidies the list at its next start.
                     }
                 }, log.Write);
             int count = ledger.Count;
@@ -184,32 +273,10 @@ namespace Lotus.Guard
             Console.WriteLine(problems == 0
                 ? "Released " + count + " blocked device(s). Removable storage is writable."
                 : problems + " item(s) could not be released. See the activity log.");
-            if (!ledgerSaved && count > 0)
-            {
-                Console.WriteLine("The list of blocked devices belongs to the service and was left as it is.");
-            }
+            Console.WriteLine(disarmed
+                ? "LOTUS is disarmed and stays that way until you arm it again in the app."
+                : "The policy itself was not changed.");
             return problems == 0 ? 0 : 1;
-        }
-
-        private static string ReadPassword(string prompt)
-        {
-            Console.Write(prompt);
-            if (Console.IsInputRedirected) return Console.ReadLine() ?? "";
-
-            var text = new StringBuilder();
-            while (true)
-            {
-                ConsoleKeyInfo key = Console.ReadKey(true);
-                if (key.Key == ConsoleKey.Enter) break;
-                if (key.Key == ConsoleKey.Backspace)
-                {
-                    if (text.Length > 0) text.Length--;
-                    continue;
-                }
-                if (!char.IsControl(key.KeyChar)) text.Append(key.KeyChar);
-            }
-            Console.WriteLine();
-            return text.ToString();
         }
     }
 

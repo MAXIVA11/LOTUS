@@ -13,7 +13,6 @@ namespace Lotus.Core
     {
         public bool Known;
         public bool Armed;
-        public bool HasPassword;
         public bool Lockdown;
         public string Version = "";
 
@@ -33,7 +32,6 @@ namespace Lotus.Core
                 if (root == null) return status;
                 status.Known = true;
                 status.Armed = Json.GetBool(root, "armed", false);
-                status.HasPassword = Json.GetBool(root, "hasPassword", false);
                 status.Lockdown = Json.GetBool(root, "lockdown", false);
                 status.Version = Json.GetString(root, "version", "");
             }
