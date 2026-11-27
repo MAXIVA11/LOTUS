@@ -674,7 +674,7 @@
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
                                                Text="Devices this PC has seen before, and that the policy would block, are marked as switched off while they are unplugged. They are already off when they come back." />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
-                                               Text="With &quot;Refuse new devices before they start&quot; on, Windows itself does not install a blocked device it has never seen, so that device never starts. A new device the policy allows is let through by LOTUS, which takes about a second." />
+                                               Text="With &quot;Refuse new devices before they start&quot; on, Windows itself does not install a blocked device it has never seen, so that device never starts. A new device the policy allows is let through by LOTUS a fraction of a second later." />
                                     <TextBlock Style="{StaticResource T.Body}" Margin="0,8,0,0"
                                                Text="Read-only mode uses the removable storage policy built into Windows, so the storage stack itself refuses the write." />
                                 </StackPanel>
