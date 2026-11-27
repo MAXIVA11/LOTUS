@@ -3,14 +3,6 @@ using Microsoft.Win32;
 
 namespace Lotus.Core
 {
-    /// <summary>Switches removable storage between writable and read-only.</summary>
-    public interface IReadOnlyPolicy
-    {
-        bool IsApplied();
-        void Apply();
-        void Remove();
-    }
-
     /// <summary>
     /// Read-only mode uses Windows' own "Removable Storage Access" policy, the one
     /// Group Policy writes under HKLM\SOFTWARE\Policies. Windows enforces it in the

@@ -650,24 +650,20 @@ namespace Lotus.Core
                     lastGateNote = null;
                     if (!owned) return;
                     gate.Remove();
-                    Log(EventTypes.PolicyChanged, "Windows installs new USB devices again.", "", "");
+                    Log(EventTypes.PolicyChanged, SystemWords.GateOpened, "", "");
                     ReinstallRefused();
                     return;
                 }
                 if (!owned && !gate.Supported)
                 {
                     gateOwned = false;
-                    NoteOnce(EventTypes.Warning,
-                        "This version of Windows cannot refuse new devices before they are installed. " +
-                        "LOTUS switches them off straight after they start instead.");
+                    NoteOnce(EventTypes.Warning, SystemWords.GateUnsupported);
                     return;
                 }
                 if (!owned && gate.Foreign)
                 {
                     gateOwned = false;
-                    NoteOnce(EventTypes.Warning,
-                        "This PC already has device installation restrictions that LOTUS did not set, so LOTUS " +
-                        "leaves them alone. It switches blocked devices off straight after they start instead.");
+                    NoteOnce(EventTypes.Warning, SystemWords.GateForeign);
                     return;
                 }
 
@@ -709,9 +705,7 @@ namespace Lotus.Core
                     gate.Apply(plan);
                     if (!owned)
                     {
-                        Log(EventTypes.PolicyChanged,
-                            "Windows now refuses to install USB devices this policy blocks, so a device it has " +
-                            "never seen does not start at all.", "", "");
+                        Log(EventTypes.PolicyChanged, SystemWords.GateClosed, "", "");
                     }
                 }
                 gateOwned = true;
@@ -719,7 +713,7 @@ namespace Lotus.Core
             }
             catch (Exception ex)
             {
-                NoteOnce(EventTypes.Error, "Could not change the device installation restrictions. " + ex.Message);
+                NoteOnce(EventTypes.Error, SystemWords.GateFailed + ex.Message);
             }
         }
 
@@ -784,6 +778,13 @@ namespace Lotus.Core
                 lettingIn[instanceId] = state;
                 admitted[instanceId] = now;
                 gate.AllowInstance(instanceId);
+                if (backend is IAdmitsAtOnce)
+                {
+                    // Nothing else is working on this device, so switch it on now.
+                    state.Attempts = 1;
+                    state.ReinstalledAt = now;
+                    backend.Reinstall(instanceId);
+                }
                 pendingNow++;
                 return;
             }
@@ -801,10 +802,7 @@ namespace Lotus.Core
                 if (!state.Reported)
                 {
                     state.Reported = true;
-                    Log(EventTypes.Warning,
-                        "Windows did not install " + name + " although the policy allows it. " +
-                        "It may have no driver on this PC. Unplug it and plug it in again to retry.",
-                        instanceId, name);
+                    Log(EventTypes.Warning, SystemWords.NotLetIn(name), instanceId, name);
                 }
                 return;
             }
@@ -841,7 +839,7 @@ namespace Lotus.Core
             }
             catch (Exception ex)
             {
-                Log(EventTypes.Warning, "Could not have Windows install the devices it refused earlier. " + ex.Message +
+                Log(EventTypes.Warning, SystemWords.RefusedRetryFailed + ex.Message +
                                         " Unplug them and plug them in again.", "", "");
             }
         }
