@@ -239,7 +239,7 @@ g "sudo dmesg | grep -E 'new (full|high|low|super)-speed USB device|authorized t
 section "Only trusted devices"
 check "the rule is set, and the keyboard and mouse it would spare do not make it ask" "sudo lotus usb trusted </dev/null"
 check "keyboard and mouse still work" "t auth $KBD | grep -qx 1 && t auth $MOUSE | grep -qx 1"
-plug c1 usb-serial 5 chardev=nowhere serial=$SERIAL
+plug c1 usb-serial 5 chardev=nowhere always-plugged=on serial=$SERIAL
 check "a serial adapter is seen" "t present $SERIAL"
 sleep 3
 check "and stays off" "t auth $SERIAL | grep -qx 0 && t not-configured $SERIAL"
@@ -305,7 +305,7 @@ check "writing works" "b=\$(t block $STICK1) && sudo mount /dev/\$b /mnt && sudo
 section "The daemon is killed"
 g "sudo lotus storage block --yes >/dev/null; sudo lotus usb trusted --yes >/dev/null"
 check "the rules are back: the second stick and the adapter are off" "t wait-auth $STICK2 0 && t wait-auth $SERIAL 0"
-g "sudo systemctl kill -s KILL lotus"
+g "sudo kill -KILL \$(pidof lotus)"
 check "the controllers stay shut while it is down" "[ \"\$(t defaults)\" = '0 ' ]"
 check "systemd brings it back" "sleep 3; systemctl is-active --quiet lotus && sudo lotus status | grep -q ARMED"
 check "nothing was let through" "t auth $STICK2 | grep -qx 0 && t auth $SERIAL | grep -qx 0 && t auth $STICK1 | grep -qx 1"
@@ -347,7 +347,7 @@ check_not "and no command gets out of it" "sudo lotus disarm --yes"
 check "keyboard and mouse still work" "t auth $KBD | grep -qx 1 && t auth $MOUSE | grep -qx 1"
 reset_output=$(g "cd release && sudo ./install.sh" 2>&1)
 printf '%s\n' "$reset_output" | sed 's/^/    /'
-if printf '%s' "$reset_output" | grep -q 'was reset'; then ok "running the installer again resets it and says so"; else bad "running the installer again resets it and says so"; fi
+if printf '%s' "$reset_output" | grep -q 'was reset' && ! printf '%s' "$reset_output" | grep -q 'unchanged'; then ok "running the installer again resets it and says so"; else bad "running the installer again resets it and says so"; fi
 check "LOTUS is disarmed and trusts nothing" "sudo lotus status | grep -q DISARMED && sudo lotus status | grep -Eq 'TRUSTED +0'"
 check "every device is on again" "t wait-auth $STICK1 1 && t wait-auth $STICK2 1 && t wait-auth $SERIAL 1 && t all-on"
 check "the controllers are open" "[ \"\$(t defaults)\" = '1 ' ]"
@@ -365,6 +365,10 @@ check "LOTUS is still armed and the sticks are still off" "sudo lotus status | g
 
 section "The way out"
 check "release-all disarms and switches everything on" "sudo lotus release-all --yes && t wait-auth $STICK1 1 && t wait-auth $STICK2 1 && t all-on && [ \"\$(t defaults)\" = '1 ' ]"
+
+section "The log"
+check_not "in all of this LOTUS never failed to switch a device" "sudo lotus log 1000 | grep -Eq 'Could not (block|switch)'"
+g "sudo lotus log 1000 | grep -E 'WARNING|ERROR' | sed 's/^/    /'"
 
 section "Removing"
 g "sudo lotus storage readonly >/dev/null; sudo lotus usb trusted --yes >/dev/null; sudo lotus arm --yes >/dev/null"

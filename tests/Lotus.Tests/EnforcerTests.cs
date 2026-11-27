@@ -435,6 +435,35 @@ namespace Lotus.Tests
         }
 
         [Fact]
+        public void Release_everything_restarts_a_connected_drive_so_that_it_is_writable_again()
+        {
+            bus.Plug(Devices.Stick());
+            enforcer.RunOnce(Armed(StorageMode.ReadOnly, PnpMode.Allow));
+            Assert.True(readOnly.Applied);
+            int blocks = bus.BlockCalls;
+            int unblocks = bus.UnblockCalls;
+
+            Assert.Equal(0, enforcer.ReleaseEverything());
+
+            // Off and on once: the drive comes back under the setting that is in force now.
+            Assert.Equal(blocks + 1, bus.BlockCalls);
+            Assert.Equal(unblocks + 1, bus.UnblockCalls);
+            Assert.False(readOnly.Applied);
+            Assert.False(Live(Devices.StickId).IsOff);
+            Assert.True(Live(Devices.StickId).Started);
+            Assert.Equal(0, ledger.Count);
+        }
+
+        [Fact]
+        public void Release_everything_leaves_drives_alone_when_read_only_was_never_on()
+        {
+            bus.Plug(Devices.Stick());
+            enforcer.RunOnce(Armed(StorageMode.Allow, PnpMode.Block));
+            Assert.Equal(0, enforcer.ReleaseEverything());
+            Assert.Equal(0, bus.BlockCalls);
+        }
+
+        [Fact]
         public void A_new_enforcer_picks_up_the_ledger_left_by_the_last_one()
         {
             bus.Plug(Devices.Headset());
