@@ -363,7 +363,7 @@ namespace Lotus.App
                 {
                     return "This version of Windows cannot do this. Blocked devices are switched off straight after they start instead.";
                 }
-                return "Windows does not install a blocked device it has never seen, so it never starts. A new device the policy allows takes about a second longer to come up.";
+                return "Windows does not install a blocked device it has never seen, so it never starts. A new device the policy allows comes up a fraction of a second later.";
             }
         }
 

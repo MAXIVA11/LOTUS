@@ -14,7 +14,7 @@ LOTUS for Linux is tested on Ubuntu 24.04 with kernel 6.8, in a virtual machine 
 
 ## Install
 
-Download `lotus-<version>-linux-x64.tar.gz` from the [releases page](https://github.com/MAXIVA11/LOTUS/releases), then:
+Download `lotus-<version>-linux-x64.tar.gz` from the [releases page](https://github.com/MAXIVA11/LOTUS/releases). The first Linux build is 1.3.0-rc.1, which is listed there as a pre-release. Then:
 
 ```sh
 tar -xzf lotus-*-linux-x64.tar.gz
@@ -126,7 +126,7 @@ A hub is a device like any other, and under "trusted only" an untrusted hub is s
 | `/var/lib/lotus/events.jsonl` | The activity log |
 | `/run/lotus/control.sock` | The socket the `lotus` command talks to the daemon on |
 
-All of it belongs to root and is closed to everyone else.
+`/var/lib/lotus` and `/run/lotus`, and everything in them, belong to root and are closed to everyone else.
 
 ## Protection
 
