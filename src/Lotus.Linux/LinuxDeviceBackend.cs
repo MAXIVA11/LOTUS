@@ -142,7 +142,26 @@ namespace Lotus.Linux
             return true;
         }
 
+        /// <summary>
+        /// One device, or null when the folder is not a device or the device is
+        /// on its way out. While the kernel takes a device away its folder is
+        /// still listed for a moment, but its files can no longer be read. Half
+        /// of a description is worse than none: a keyboard without its
+        /// descriptors would look like an unknown device and be judged as one.
+        /// </summary>
         private UsbDevice Describe(string name, Dictionary<string, string> taken)
+        {
+            try
+            {
+                return DescribeWhole(name, taken);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        private UsbDevice DescribeWhole(string name, Dictionary<string, string> taken)
         {
             string dir = Path.Combine(root, name);
             string vid = ReadHex4(Path.Combine(dir, "idVendor"));
@@ -201,7 +220,8 @@ namespace Lotus.Linux
                 device.Started = true;
                 device.Problem = 0;
             }
-            return device;
+            // Gone while it was being read.
+            return Directory.Exists(dir) ? device : null;
         }
 
         /// <summary>
@@ -339,12 +359,16 @@ namespace Lotus.Linux
         }
 
         // ---------- reading sysfs ----------
+        //
+        // A file that is not there gives null: not every device has a serial
+        // number. A file that is there and cannot be read throws, and the
+        // device is left out of this scan.
 
         private static string ReadLine(string path)
         {
+            if (!File.Exists(path)) return null;
             try
             {
-                if (!File.Exists(path)) return null;
                 using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 {
                     var buffer = new byte[512];
@@ -355,7 +379,7 @@ namespace Lotus.Linux
                     return end >= 0 ? text.Substring(0, end) : text;
                 }
             }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            catch (FileNotFoundException)
             {
                 return null;
             }
@@ -363,9 +387,9 @@ namespace Lotus.Linux
 
         private static byte[] ReadBytes(string path)
         {
+            if (!File.Exists(path)) return null;
             try
             {
-                if (!File.Exists(path)) return null;
                 using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 using (var memory = new MemoryStream())
                 {
@@ -379,7 +403,7 @@ namespace Lotus.Linux
                     return memory.ToArray();
                 }
             }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            catch (FileNotFoundException)
             {
                 return null;
             }

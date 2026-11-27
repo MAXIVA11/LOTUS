@@ -54,9 +54,12 @@ if /usr/local/bin/lotus locked >/dev/null 2>&1; then
     systemctl restart lotus.service
     answers || fail "The LOTUS daemon did not come up after the reset. Look at: journalctl -u lotus"
     say "The policy store was damaged, so LOTUS was reset. It is disarmed and trusts no device."
+    updating=reset
 fi
 
-if [ "$updating" = yes ]; then
+if [ "$updating" = reset ]; then
+    say "LOTUS $(/usr/local/bin/lotus version | sed 's/^LOTUS //') is installed."
+elif [ "$updating" = yes ]; then
     say "LOTUS $(/usr/local/bin/lotus version | sed 's/^LOTUS //') is installed. Your policy is unchanged."
 else
     say "LOTUS $(/usr/local/bin/lotus version | sed 's/^LOTUS //') is installed. It is disarmed, so nothing is blocked yet."

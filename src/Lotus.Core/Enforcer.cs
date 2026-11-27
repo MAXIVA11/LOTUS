@@ -611,9 +611,13 @@ namespace Lotus.Core
             {
                 if (ledger.ReadOnlyOwned)
                 {
-                    if (readOnly.IsApplied()) readOnly.Remove();
+                    bool applied = readOnly.IsApplied();
+                    if (applied) readOnly.Remove();
                     ledger.ReadOnlyOwned = false;
                     Log(EventTypes.ReadOnlyOff, "Removable storage is writable again.", "", "");
+                    // A drive that is connected keeps the setting it was connected
+                    // under. Without this it would stay read-only until it is replugged.
+                    if (applied) RestartStorage(backend.Scan(), clock());
                 }
             }
             catch (Exception ex)
