@@ -8,6 +8,9 @@ say() { printf '  %s\n' "$*"; }
 [ "$(id -u)" -eq 0 ] || { printf '  XX  %s\n' "Run this as root: sudo lotus-uninstall" >&2; exit 1; }
 
 released=no
+rule=/etc/udev/rules.d/99-lotus-readonly.rules
+read_only=no
+[ -e "$rule" ] && read_only=yes
 if [ -x /usr/local/bin/lotus ] && command -v systemctl >/dev/null 2>&1; then
     # The daemon knows which devices it switched off, so it is the one to
     # switch them back on. If it is down, bring it up for this.
@@ -45,8 +48,23 @@ if [ "$released" = no ]; then
     done
 fi
 
-rm -f /etc/udev/rules.d/99-lotus-readonly.rules
+rm -f "$rule"
 command -v udevadm >/dev/null 2>&1 && udevadm control --reload >/dev/null 2>&1
+
+if [ "$released" = no ] && [ "$read_only" = yes ]; then
+    # Read-only mode was on. The rule is gone, but a disk that is connected
+    # keeps the mark it got. Take it off every USB disk and its partitions.
+    for disk in /sys/block/*; do
+        [ -e "$disk/ro" ] || continue
+        case "$(readlink -f "$disk")" in
+            */usb[0-9]*/*) ;;
+            *) continue ;;
+        esac
+        for part in "$disk" "$disk"/*; do
+            [ "$(cat "$part/ro" 2>/dev/null)" = 1 ] && blockdev --setrw "/dev/$(basename "$part")" 2>/dev/null
+        done
+    done
+fi
 
 rm -f /etc/systemd/system/lotus.service
 command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1
