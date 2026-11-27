@@ -72,7 +72,7 @@ LOTUS runs on Windows 10 (version 1607 or newer) and Windows 11. It uses the .NE
 
 LOTUS for Linux has the same rules, the same decision engine and the same encrypted store. It has no window: a daemon enforces the policy, and you set it in a terminal.
 
-Download `lotus-<version>-linux-x64.tar.gz` from the [releases page](https://github.com/MAXIVA11/LOTUS/releases). The first Linux build is 1.3.0-rc.1, which is listed there as a pre-release.
+Download `lotus-<version>-linux-x64.tar.gz` from the [releases page](https://github.com/MAXIVA11/LOTUS/releases).
 
 ```sh
 tar -xzf lotus-*-linux-x64.tar.gz
