@@ -1,5 +1,7 @@
 # How LOTUS works
 
+This page describes the Windows version. What counts as one device, how trust works and the order of the decision are the same on Linux, because both versions run the same engine. How devices are read and switched there is in [linux.md](linux.md).
+
 ## The parts
 
 | Program | Runs as | Job |
@@ -59,7 +61,7 @@ If the descriptor cannot be read, LOTUS falls back to waiting up to three second
 For each device, in this order:
 
 1. LOTUS is disarmed: allow.
-2. Windows boots from a disk behind this device: allow.
+2. The system runs from a disk behind this device: allow.
 3. The device is on the trusted list, and does nothing it did not do when it was trusted: allow.
 4. It has storage and storage is set to Block: block.
 5. PnP devices are set to Trusted only and the device does something besides storage:

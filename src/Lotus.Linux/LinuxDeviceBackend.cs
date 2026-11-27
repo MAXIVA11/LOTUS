@@ -234,6 +234,7 @@ namespace Lotus.Linux
             byte[] raw = ReadBytes(Path.Combine(dir, "descriptors"));
             var interfaces = new List<UsbInterfaceInfo>();
             int deviceClass = -1;
+            bool mediaTransfer = false;
             if (raw != null && raw.Length >= 18 && raw[0] >= 18 && raw[1] == 1)
             {
                 deviceClass = raw[4];
@@ -248,6 +249,7 @@ namespace Lotus.Linux
                     var configuration = new byte[total];
                     Buffer.BlockCopy(raw, offset, configuration, 0, total);
                     UsbDescriptors.ParseConfiguration(configuration, interfaces);
+                    if (LooksLikeMediaTransfer(configuration)) mediaTransfer = true;
                     offset += total;
                 }
             }
@@ -267,6 +269,11 @@ namespace Lotus.Linux
                 string code = info.Class.ToString("X2");
                 if (!functions.Contains(code)) functions.Add(code);
                 kinds |= UsbClassifier.KindFromFunction(code);
+            }
+            if (mediaTransfer)
+            {
+                functions.Add("MTP");
+                kinds |= UsbClassifier.KindFromFunction("MTP");
             }
             // A class in the device descriptor describes the device as a whole.
             // 00 and EF only say "look at the interfaces".
@@ -291,6 +298,49 @@ namespace Lotus.Linux
         /// that was right a moment ago may belong to another device by now: one
         /// was pulled out and another went into the same port.
         /// </summary>
+        /// <summary>
+        /// Phones and players that speak MTP mostly say so with the class for
+        /// still image devices, which the class code covers. Older ones use a
+        /// vendor specific interface instead and tell Windows what it is in a
+        /// descriptor only Windows asks for. What gives them away is the shape
+        /// MTP requires: subclass FF, protocol 00 and exactly three endpoints,
+        /// one bulk in, one bulk out and one interrupt in. Such a device is
+        /// treated as a phone. That may catch the odd device that is something
+        /// else, which then needs to be trusted to work while storage is blocked.
+        /// </summary>
+        public static bool LooksLikeMediaTransfer(byte[] configuration)
+        {
+            if (configuration == null) return false;
+            bool candidate = false;
+            int bulkIn = 0, bulkOut = 0, interruptIn = 0, others = 0;
+            int offset = 0;
+            while (offset + 2 <= configuration.Length)
+            {
+                int length = configuration[offset];
+                int type = configuration[offset + 1];
+                if (length < 2 || offset + length > configuration.Length) break;
+                if (type == 4 && length >= 9)
+                {
+                    if (candidate && bulkIn == 1 && bulkOut == 1 && interruptIn == 1 && others == 0) return true;
+                    // Only the first setting of an interface says what it is when the device starts.
+                    candidate = configuration[offset + 3] == 0 && configuration[offset + 5] == 0xFF &&
+                                configuration[offset + 6] == 0xFF && configuration[offset + 7] == 0x00;
+                    bulkIn = bulkOut = interruptIn = others = 0;
+                }
+                else if (type == 5 && length >= 7 && candidate)
+                {
+                    bool into = (configuration[offset + 2] & 0x80) != 0;
+                    int transfer = configuration[offset + 3] & 0x03;
+                    if (transfer == 2 && into) bulkIn++;
+                    else if (transfer == 2) bulkOut++;
+                    else if (transfer == 3 && into) interruptIn++;
+                    else others++;
+                }
+                offset += length;
+            }
+            return candidate && bulkIn == 1 && bulkOut == 1 && interruptIn == 1 && others == 0;
+        }
+
         private string KernelName(string instanceId)
         {
             Scan();

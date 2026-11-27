@@ -183,7 +183,7 @@ def banner(still=False, width=1200, height=380):
             ".k{animation:k .01s steps(1) both}"
         ) + STILL_CSS
 
-    o = [svg_open(w, h, "LOTUS", "Local Operational Trusted USB System. Offline device control for Windows.")]
+    o = [svg_open(w, h, "LOTUS", "Local Operational Trusted USB System. Offline device control for Windows and Linux.")]
     o.append("<defs>")
     o.append(hazard_pattern())
     o.append(grid_pattern())
@@ -222,7 +222,7 @@ def banner(still=False, width=1200, height=380):
         '<text x="516" y="251" class="cond" font-size="22" fill="%s" text-anchor="middle" '
         'textLength="236" lengthAdjust="spacingAndGlyphs">OFFLINE DEVICE CONTROL</text>' % INK
     )
-    o.append(mono(680, 250, "FOR WINDOWS 10 AND 11", 16, DIM))
+    o.append(mono(680, 250, "FOR WINDOWS AND LINUX", 16, DIM))
 
     # What the name stands for, typed out once.
     phrase = "LOCAL OPERATIONAL TRUSTED USB SYSTEM"
@@ -299,7 +299,7 @@ def flow():
     centres = [200, 350, 500, 650, 800]
     checks = [
         ("01", "LOTUS IS", "DISARMED?", True),
-        ("02", "WINDOWS", "BOOT DISK?", True),
+        ("02", "THE SYSTEM", "RUNS FROM IT?", True),
         ("03", "ON THE", "TRUSTED LIST?", True),
         ("04", "HAS STORAGE,", "SET TO BLOCK?", False),
         ("05", "ANYTHING ELSE,", "TRUSTED ONLY?", False),
@@ -308,8 +308,8 @@ def flow():
     frame = [0, 0, w - 26, 0, w, 26, w, h, 26, h, 0, h - 26]
     o = [svg_open(
         w, h, "The order in which LOTUS decides",
-        "A device on a USB port passes five checks from left to right. If LOTUS is disarmed, if Windows boots "
-        "from the device, or if the device is on the trusted list, it is allowed. If it has storage and storage "
+        "A device on a USB port passes five checks from left to right. If LOTUS is disarmed, if the system "
+        "runs from the device, or if the device is on the trusted list, it is allowed. If it has storage and storage "
         "is set to block, or if it does anything else and USB devices are set to trusted only, it is blocked. "
         "A device that no check stops is allowed.")]
     o.append("<defs>%s%s" % (grid_pattern(), SCAN_DEFS))

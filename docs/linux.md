@@ -8,7 +8,7 @@ There is no window. You set the policy with `sudo lotus ...` in a terminal.
 
 - A 64-bit Intel or AMD computer.
 - A Linux that uses systemd.
-- Nothing else. The program is one file that carries its own runtime.
+- No runtime to install. The program is one file that carries its own.
 
 LOTUS for Linux is tested on Ubuntu 24.04 with kernel 6.8, in a virtual machine with USB devices emulated by QEMU. It has not been run against physical USB hardware. See [How it is tested](#how-it-is-tested).
 
@@ -83,11 +83,17 @@ The kernel reads a device's descriptors before it asks whether the device is aut
 
 Strict mode uses a second switch. Each USB controller has a file `authorized_default`. While it holds 0, the kernel does not switch on anything that is plugged into that controller. It reads the descriptors and waits. With strict mode on and LOTUS armed, LOTUS sets every controller to 0 and switches on the devices the policy allows, one by one. A device the policy blocks never runs. The kernel log then has the line "Device is not authorized for usage" for it and nothing from any driver.
 
-LOTUS hears about new devices from the kernel itself, over a netlink socket. That message is only a signal to look. What LOTUS acts on is what it reads under `/sys` afterwards.
+A device the policy allows is held back in the same way at first and switched on as soon as LOTUS has read what it is. In the test machine a new mouse was running 44 to 48 milliseconds after the kernel had held it back.
+
+LOTUS hears about new devices from the kernel itself, over a netlink socket. It takes such a message as a reason to look, and decides from what it then reads under `/sys`.
 
 Read-only mode is a udev rule, `/etc/udev/rules.d/99-lotus-readonly.rules`. It marks every USB disk as read-only in the kernel the moment the disk appears, before the desktop can mount it. The kernel then refuses writes whatever a mount command asks for. When the mode changes, LOTUS switches connected disks off and on once so that they appear again under the new rule.
 
 LOTUS keeps a ledger of the devices it switched off and only ever switches those back on. A device that is off for another reason is left alone.
+
+### What counts as storage
+
+The storage rule covers mass storage devices (USB class 08), which is every stick, external disk and card reader, and devices of the still image class (06), which is how cameras and current phones offer their files. Some older phones and players speak MTP over a vendor specific interface instead. LOTUS recognises those by the shape MTP requires, an interface with subclass FF, protocol 00 and one bulk endpoint in each direction plus an interrupt endpoint, and treats them as phones too.
 
 ### How a device is named
 
@@ -120,7 +126,7 @@ All of it belongs to root and is closed to everyone else.
 
 The store has the same format as on Windows: AES-256 with HMAC-SHA256, in a binary container. Someone who gets hold of `policy.dat` without the key cannot read it or change it unnoticed. If the file is changed, replaced or deleted while the daemon runs, the daemon puts its own copy back and writes a "tamper" line to the log. If the store is wrecked while the daemon is down, LOTUS locks down: it blocks storage and every untrusted device until `install.sh` is run again, which resets it to an empty policy.
 
-Linux has no counterpart to the Windows data protection service, so the key is an ordinary file that only root can read. That is the honest size of it: the encryption keeps the policy from anyone who is not root. It does not keep it from root.
+Linux has no counterpart to the Windows data protection service, so the key is an ordinary file that only root can read. The encryption keeps the policy from everyone who is not root. Root can read the key.
 
 The control socket is a Unix socket with mode 0600, and the daemon also asks the kernel who is on the other end of each connection and turns away anyone who is not root.
 
@@ -177,10 +183,11 @@ lotus --sysfs ./fake-sys --state ./state --socket ./lotus.sock status
 
 `tests/Lotus.Linux.Tests` holds the unit tests. The tests of the shared core run there against the Linux build, and the Linux parts are tested on a made-up device tree: reading devices, the controller switch, the read-only rule, the socket, and the whole daemon from arming to removal.
 
-`tests/linux/vm-test.sh` tests on a real kernel. It boots Ubuntu 24.04 under QEMU, installs LOTUS from the release folder the way a user would, and plugs emulated devices into the machine's USB controller: three sticks, two keyboards, a mouse, a serial adapter and a hub. After each step it asks the kernel in the machine what happened. It checks, among other things, that:
+`tests/linux/vm-test.sh` tests on a real kernel. It boots Ubuntu 24.04 under QEMU, installs LOTUS from the release folder the way a user would, and plugs emulated devices into the machine's USB controller: three sticks, two keyboards, a mouse, a phone, a network adapter, a sound card, a smart card reader, a serial adapter and a hub. After each step it asks the kernel in the machine what happened. It checks, among other things, that:
 
 - a blocked stick loses its disk, and a new stick under strict mode never gets a driver
 - a new device the policy allows is switched on
+- a phone counts as storage, and a network adapter, a sound card and a card reader are switched off under "trusted only"
 - trust follows a stick to another port and does not cover a second stick of the same model
 - nothing behind an untrusted hub exists, and a stick behind a trusted hub is still blocked
 - read-only disks refuse writes, also a disk that is plugged in later
@@ -190,4 +197,4 @@ lotus --sysfs ./fake-sys --state ./state --socket ./lotus.sock status
 
 CI runs both on every change.
 
-What this does not cover is physical hardware. The devices in the test are emulated, the kernel and everything above it are real. Timing on real ports, devices that misbehave electrically and controllers other than xHCI have not been tested.
+The test does not cover physical hardware. The devices in it are emulated, while the kernel and everything above it are real. Timing on real ports, devices that misbehave electrically and controllers other than xHCI have not been tested.
