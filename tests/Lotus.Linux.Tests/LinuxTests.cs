@@ -374,6 +374,21 @@ namespace Lotus.Linux.Tests
         }
 
         [Fact]
+        public void The_systems_disks_are_named_for_the_read_only_rule_without_the_hub_they_hang_on()
+        {
+            sys.Plug("1-3", 0x05E3, 0x0608, "USB2.0 Hub", null, new[] { FakeSysfs.Hub }, deviceClass: 9);
+            sys.PlugStick("1-3.1", "4c53aa-01");
+            sys.PlugStick("2-1", "OTHER");
+            List<UsbIdentity> disks = Backend(() => new HashSet<string> { "1-3", "1-3.1" }).SystemDisks();
+            UsbIdentity disk = Assert.Single(disks);
+            Assert.Equal("0781", disk.Vid);
+            Assert.Equal("5567", disk.Pid);
+            Assert.Equal("4c53aa-01", disk.RawSerial); // as the device gives it, not as LOTUS writes it
+
+            Assert.Throws<IOException>(() => Backend(() => throw new IOException("no")).SystemDisks());
+        }
+
+        [Fact]
         public void When_the_system_disk_cannot_be_worked_out_no_storage_device_is_touched()
         {
             sys.PlugStick();
@@ -533,15 +548,96 @@ namespace Lotus.Linux.Tests
             readOnly.Apply();
             Assert.True(readOnly.IsApplied());
             string text = File.ReadAllText(rule);
-            Assert.Contains("SUBSYSTEM==\"block\"", text);
-            Assert.Contains("ENV{ID_BUS}==\"usb\"", text);
-            Assert.Contains("blockdev --setro /dev/%k", text);
+            Assert.Contains("SUBSYSTEM!=\"block\", GOTO=\"lotus_readonly_end\"", text);
+            Assert.Contains("SUBSYSTEMS==\"usb\", RUN+=\"/sbin/blockdev --setro /dev/%k\"", text);
+            Assert.EndsWith("LABEL=\"lotus_readonly_end\"\n", text);
+            Assert.DoesNotContain("ATTRS", text);
             Assert.Equal(1, reloads);
 
             readOnly.Remove();
             Assert.False(File.Exists(rule));
             Assert.False(readOnly.IsApplied());
             Assert.Equal(2, reloads);
+        }
+
+        [Fact]
+        public void The_disk_the_system_runs_from_is_spared_by_name()
+        {
+            string rule = Path.Combine(folder, "99-lotus-readonly.rules");
+            var system = new List<UsbIdentity>
+            {
+                new UsbIdentity { Vid = "0781", Pid = "5567", RawSerial = "4C530001230505116353" }
+            };
+            var readOnly = new LinuxReadOnly(rule, null, () => system);
+            readOnly.Apply();
+            string[] lines = File.ReadAllLines(rule);
+
+            int spare = Array.FindIndex(lines, l => l.Contains("ATTRS{serial}==\"4C530001230505116353\""));
+            int setReadOnly = Array.FindIndex(lines, l => l.Contains("--setro"));
+            Assert.True(spare >= 0 && spare < setReadOnly, "the exception has to come before the rule it is an exception to");
+            Assert.Equal("ATTRS{idVendor}==\"0781\", ATTRS{idProduct}==\"5567\", ATTRS{serial}==\"4C530001230505116353\", " +
+                         "GOTO=\"lotus_readonly_end\"", lines[spare]);
+            Assert.True(readOnly.IsApplied());
+
+            // The system now runs from another disk: the rule is out of date and is written again.
+            system[0] = new UsbIdentity { Vid = "0951", Pid = "1666", RawSerial = "AA11" };
+            Assert.False(readOnly.IsApplied());
+            readOnly.Apply();
+            Assert.True(readOnly.IsApplied());
+            Assert.DoesNotContain("0781", File.ReadAllText(rule));
+        }
+
+        [Theory]
+        [InlineData("AB\"CD")]
+        [InlineData("AB*")]
+        [InlineData("A B")]
+        [InlineData("x\", RUN+=\"/bin/evil")]
+        [InlineData("a|b")]
+        [InlineData("")]
+        public void A_serial_number_that_could_mean_something_to_udev_never_gets_into_the_rule(string serial)
+        {
+            string text = LinuxReadOnly.BuildRule(new[] { new UsbIdentity { Vid = "0781", Pid = "5567", RawSerial = serial } });
+            Assert.DoesNotContain("ATTRS{serial}", text);
+            Assert.DoesNotContain("evil", text);
+            // The disk is still spared, by its model alone.
+            Assert.Contains("ATTRS{idVendor}==\"0781\", ATTRS{idProduct}==\"5567\", GOTO=", text);
+            // Seven lines, as with a harmless serial number: nothing got in as a line of its own.
+            Assert.Equal(7, text.Split('\n').Length - 1);
+        }
+
+        [Fact]
+        public void An_identity_that_is_not_two_hex_numbers_is_left_out()
+        {
+            string text = LinuxReadOnly.BuildRule(new[]
+            {
+                new UsbIdentity { Vid = "07\"1", Pid = "5567", RawSerial = "A" },
+                new UsbIdentity { Vid = "0781", Pid = "ZZZZ", RawSerial = "A" },
+                new UsbIdentity { Vid = "0781", Pid = "55670", RawSerial = "A" }
+            });
+            Assert.DoesNotContain("ATTRS", text);
+        }
+
+        [Fact]
+        public void When_the_systems_disk_cannot_be_worked_out_read_only_is_not_switched_on()
+        {
+            string rule = Path.Combine(folder, "99-lotus-readonly.rules");
+            var readOnly = new LinuxReadOnly(rule, null, () => throw new IOException("mount table unreadable"));
+            var ex = Assert.Throws<InvalidOperationException>(() => readOnly.Apply());
+            Assert.Contains("leaves every disk writable", ex.Message);
+            Assert.False(File.Exists(rule));
+            Assert.False(readOnly.IsApplied());
+        }
+
+        [Fact]
+        public void A_rule_that_is_in_place_stays_when_the_systems_disk_cannot_be_worked_out_for_a_moment()
+        {
+            string rule = Path.Combine(folder, "99-lotus-readonly.rules");
+            bool fail = false;
+            var readOnly = new LinuxReadOnly(rule, null,
+                () => fail ? throw new IOException("busy") : new List<UsbIdentity>());
+            readOnly.Apply();
+            fail = true;
+            Assert.True(readOnly.IsApplied());
         }
 
         [Fact]

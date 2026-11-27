@@ -74,7 +74,11 @@ namespace Lotus.Linux
 
         public override IReadOnlyPolicy CreateReadOnly()
         {
-            return readOnlyRulePath == null ? new LinuxReadOnly() : new LinuxReadOnly(readOnlyRulePath, null);
+            // The rule spares the disk the system runs from, and the backend knows which that is.
+            Func<List<UsbIdentity>> systemDisks = () => backend != null ? backend.SystemDisks() : new List<UsbIdentity>();
+            return readOnlyRulePath == null
+                ? new LinuxReadOnly(systemDisks)
+                : new LinuxReadOnly(readOnlyRulePath, null, systemDisks);
         }
 
         public override IInstallGate CreateInstallGate(IDeviceBackend deviceBackend)
