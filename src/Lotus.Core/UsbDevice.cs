@@ -81,6 +81,22 @@ namespace Lotus.Core
         /// <summary>The device is plugged in but switched off, by LOTUS or by someone else.</summary>
         public bool IsOff => Problem == ProblemDisabled || Problem == ProblemRemoved;
 
+        /// <summary>Windows problem code of a device that has no driver set up yet.</summary>
+        public const int ProblemNotConfigured = 1;
+        /// <summary>Windows problem code of a device whose installation did not go through.</summary>
+        public const int ProblemFailedInstall = 28;
+
+        /// <summary>
+        /// Connected, but Windows has not installed it. That is how a device looks
+        /// that Windows refused under the installation restrictions.
+        /// </summary>
+        public bool InstallRefused => Present && !Started && IsRefusedProblem(Problem);
+
+        public static bool IsRefusedProblem(int problem)
+        {
+            return problem == ProblemNotConfigured || problem == ProblemFailedInstall;
+        }
+
         /// <summary>Vendor and product, for example VID_0781&amp;PID_5567.</summary>
         public string ModelId => "VID_" + Vid + "&PID_" + Pid;
 
@@ -100,5 +116,15 @@ namespace Lotus.Core
         {
             return Name + " [" + InstanceId + "]";
         }
+    }
+
+    /// <summary>One function of a USB device that Windows lists as a device node of its own.</summary>
+    public sealed class UsbChild
+    {
+        public string InstanceId = "";
+        public bool Started;
+        public int Problem;
+
+        public bool InstallRefused => !Started && UsbDevice.IsRefusedProblem(Problem);
     }
 }

@@ -62,6 +62,61 @@ namespace Lotus.Core
         }
 
         /// <summary>
+        /// The functions of a device that Windows lists as device nodes of their
+        /// own on the USB bus: the interfaces of a composite device. A device with
+        /// a single function has none.
+        /// </summary>
+        public static List<UsbChild> Children(string instanceId)
+        {
+            var children = new List<UsbChild>();
+            if (CfgMgr.CM_Locate_DevNodeW(out int node, instanceId, CfgMgr.CM_LOCATE_DEVNODE_NORMAL) != CfgMgr.CR_SUCCESS)
+            {
+                return children;
+            }
+            if (CfgMgr.CM_Get_Child(out int child, node, 0) != CfgMgr.CR_SUCCESS) return children;
+            for (int guard = 0; guard < 64; guard++)
+            {
+                string id = CfgMgr.GetDeviceId(child);
+                // What hangs off a hub are devices in their own right, not functions of the hub.
+                if (!string.IsNullOrEmpty(id) && id.StartsWith(@"USB\", StringComparison.OrdinalIgnoreCase) &&
+                    !UsbClassifier.IsWholeDeviceId(id))
+                {
+                    var entry = new UsbChild { InstanceId = id.ToUpperInvariant() };
+                    if (CfgMgr.CM_Get_DevNode_Status(out int status, out int problem, child, 0) == CfgMgr.CR_SUCCESS)
+                    {
+                        entry.Started = (status & CfgMgr.DN_STARTED) != 0;
+                        entry.Problem = (status & CfgMgr.DN_HAS_PROBLEM) != 0 ? problem : 0;
+                    }
+                    children.Add(entry);
+                }
+                if (CfgMgr.CM_Get_Sibling(out int next, child, 0) != CfgMgr.CR_SUCCESS) break;
+                child = next;
+            }
+            return children;
+        }
+
+        /// <summary>
+        /// The device a function node belongs to. Returns null when the ID is not
+        /// a function of a connected USB device.
+        /// </summary>
+        public static string ParentOf(string instanceId)
+        {
+            if (string.IsNullOrEmpty(instanceId) ||
+                !instanceId.StartsWith(@"USB\", StringComparison.OrdinalIgnoreCase) ||
+                UsbClassifier.IsWholeDeviceId(instanceId))
+            {
+                return null;
+            }
+            if (CfgMgr.CM_Locate_DevNodeW(out int node, instanceId, CfgMgr.CM_LOCATE_DEVNODE_NORMAL) != CfgMgr.CR_SUCCESS)
+            {
+                return null;
+            }
+            if (CfgMgr.CM_Get_Parent(out int parent, node, 0) != CfgMgr.CR_SUCCESS) return null;
+            string parentId = CfgMgr.GetDeviceId(parent);
+            return UsbClassifier.IsWholeDeviceId(parentId) ? parentId.ToUpperInvariant() : null;
+        }
+
+        /// <summary>
         /// Lists USB devices Windows remembers that are not plugged in right now.
         /// Only what Windows stored about them is available, so a composite device
         /// in this list does not say what it does.

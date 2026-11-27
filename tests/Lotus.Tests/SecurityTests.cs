@@ -1116,12 +1116,14 @@ namespace Lotus.Tests
         private readonly string pipeName = "LotusGuard.Test." + Guid.NewGuid().ToString("N");
         private readonly SimulatedBackend bus = new SimulatedBackend();
         private readonly SimulatedReadOnlyPolicy readOnly = new SimulatedReadOnlyPolicy();
+        private readonly SimulatedInstallGate installGate = new SimulatedInstallGate();
         private GuardWorker worker;
         private readonly List<string> stops = new List<string>();
 
         public GuardWorkerTests()
         {
             LotusPaths.OverrideDataDir(folder);
+            bus.Gate = installGate;
         }
 
         public void Dispose()
@@ -1138,6 +1140,7 @@ namespace Lotus.Tests
             {
                 Backend = bus,
                 ReadOnly = readOnly,
+                InstallGate = installGate,
                 PipeName = pipeName,
                 AdministratorsOnly = false,
                 HardenFolders = false,

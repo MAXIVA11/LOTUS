@@ -26,6 +26,8 @@ namespace Lotus.App.Backend
         public bool ReadOnlyActive;
         /// <summary>The policy store was damaged and LOTUS blocks everything until it is reinstalled.</summary>
         public bool Lockdown;
+        /// <summary>"on", "off", "foreign" or "unsupported": whether Windows is refusing new devices for LOTUS.</summary>
+        public string StrictState = "";
     }
 
     /// <summary>What came of an attempt to save.</summary>
@@ -89,6 +91,7 @@ namespace Lotus.App.Backend
                 {
                     snapshot.Policy = reply.ReadPolicy() ?? new Policy();
                     ledger = reply.ReadLedger();
+                    snapshot.StrictState = Json.GetString(reply.Data, "strictState", "");
                 }
                 else
                 {
@@ -190,6 +193,7 @@ namespace Lotus.App.Backend
         private readonly object gate = new object();
         private readonly SimulatedBackend bus = new SimulatedBackend();
         private readonly SimulatedReadOnlyPolicy readOnly = new SimulatedReadOnlyPolicy();
+        private readonly SimulatedInstallGate installGate = new SimulatedInstallGate();
         private readonly List<LotusEvent> events = new List<LotusEvent>();
         private readonly Enforcer enforcer;
         private Policy policy = new Policy();
@@ -206,6 +210,7 @@ namespace Lotus.App.Backend
         public DemoBackend()
         {
             bus.NotDisableable.Add(KeyboardId);
+            bus.Gate = installGate;
             bus.Plug(new UsbDevice
             {
                 InstanceId = KeyboardId, Name = "USB Keyboard", Vendor = "", Vid = "1A2C", Pid = "2D23",
@@ -242,7 +247,7 @@ namespace Lotus.App.Backend
                 Functions = new List<string> { "E0" }, Kinds = DeviceKinds.Bluetooth
             });
 
-            enforcer = new Enforcer(bus, readOnly, new Ledger(), null, AddEvent);
+            enforcer = new Enforcer(bus, readOnly, new Ledger(), null, AddEvent, null, installGate);
             AddEvent(new LotusEvent
             {
                 Type = EventTypes.GuardStarted,
@@ -285,7 +290,8 @@ namespace Lotus.App.Backend
                     Policy = policy.Clone(),
                     Devices = pass.Devices,
                     Guard = GuardState.Simulated,
-                    ReadOnlyActive = readOnly.Applied
+                    ReadOnlyActive = readOnly.Applied,
+                    StrictState = installGate.Owned ? "on" : "off"
                 };
                 snapshot.Events = new List<LotusEvent>(events);
                 snapshot.Events.Reverse();

@@ -116,6 +116,12 @@ namespace Lotus.Core
         /// always be used to reach LOTUS. Turn it off to stop rogue keyboards as well.
         /// </summary>
         public bool AllowInput = true;
+        /// <summary>
+        /// Has Windows refuse to install USB devices the policy blocks, so that a
+        /// device this PC has never seen does not start at all. Devices the policy
+        /// allows are let through one by one.
+        /// </summary>
+        public bool Strict = true;
         public List<TrustEntry> Trusted = new List<TrustEntry>();
 
         public static string NormalizeId(string id)
@@ -173,7 +179,7 @@ namespace Lotus.Core
         public bool SettingsEqual(Policy other)
         {
             return other != null && Armed == other.Armed && Storage == other.Storage &&
-                   Pnp == other.Pnp && AllowInput == other.AllowInput;
+                   Pnp == other.Pnp && AllowInput == other.AllowInput && Strict == other.Strict;
         }
 
         public Policy Clone()
@@ -184,7 +190,8 @@ namespace Lotus.Core
                 Armed = Armed,
                 Storage = Storage,
                 Pnp = Pnp,
-                AllowInput = AllowInput
+                AllowInput = AllowInput,
+                Strict = Strict
             };
             foreach (TrustEntry entry in Trusted)
             {
@@ -223,6 +230,7 @@ namespace Lotus.Core
                 ["storage"] = StorageToText(Storage),
                 ["pnp"] = Pnp == PnpMode.Block ? "block" : "allow",
                 ["allowInput"] = AllowInput,
+                ["strict"] = Strict,
                 ["trusted"] = trusted
             };
             return Json.Write(root);
@@ -247,6 +255,8 @@ namespace Lotus.Core
             policy.Version = CurrentVersion;
             policy.Armed = RequireBool(root, "armed", false);
             policy.AllowInput = RequireBool(root, "allowInput", true);
+            // A policy from before this setting existed gets it switched on.
+            policy.Strict = RequireBool(root, "strict", true);
 
             string storage = Json.GetString(root, "storage", "allow");
             switch (storage.ToLowerInvariant())

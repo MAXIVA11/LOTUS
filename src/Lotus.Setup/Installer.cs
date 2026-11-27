@@ -551,6 +551,7 @@ namespace Lotus.Setup
             // by hand.
             bool releasedByGuard = StopService(GuardProtocol.PurposeUninstall);
             if (!releasedByGuard) ReleaseDevices();
+            RemoveInstallRestrictions();
             DeleteService();
             StopRunningCopies();
             RemoveRegistration();
@@ -577,6 +578,29 @@ namespace Lotus.Setup
             {
                 Warn("Some blocked devices could not be switched back on. " +
                      "Open Device Manager, look for devices marked with a down arrow, and choose Enable device.");
+            }
+        }
+
+        /// <summary>
+        /// While LOTUS is armed it has Windows refuse to install blocked USB
+        /// devices. The service takes that away when it is asked to stop for a
+        /// removal. This is the safety net for the case that it could not: left
+        /// behind, the restrictions would keep new USB devices from working.
+        /// </summary>
+        private void RemoveInstallRestrictions()
+        {
+            try
+            {
+                var gate = new RegistryInstallGate();
+                if (!gate.Owned) return;
+                log("Removing the device installation restrictions");
+                gate.Remove();
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                       ex is System.Security.SecurityException)
+            {
+                Warn("Could not remove the device installation restrictions LOTUS set. " + ex.Message +
+                     " Delete the registry key HKLM\\" + RegistryInstallGate.DefaultPath + " by hand.");
             }
         }
 

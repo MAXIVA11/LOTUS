@@ -24,6 +24,12 @@ namespace Lotus.Core
         /// off when it is plugged in.
         /// </summary>
         DeviceOpResult BlockAbsent(string instanceId);
+        /// <summary>The functions of a connected device that Windows lists as device nodes of their own.</summary>
+        List<UsbChild> Children(string instanceId);
+        /// <summary>The device a function node belongs to, or null.</summary>
+        string ParentOf(string instanceId);
+        /// <summary>Makes Windows forget a connected device and find it again, so that it is installed afresh.</summary>
+        DeviceOpResult Reinstall(string instanceId);
     }
 
     public sealed class WindowsDeviceBackend : IDeviceBackend
@@ -79,6 +85,22 @@ namespace Lotus.Core
         public DeviceOpResult BlockAbsent(string instanceId)
         {
             return DeviceControl.MarkAbsentDisabled(instanceId);
+        }
+
+        public List<UsbChild> Children(string instanceId)
+        {
+            return DeviceScanner.Children(instanceId);
+        }
+
+        public string ParentOf(string instanceId)
+        {
+            return DeviceScanner.ParentOf(instanceId);
+        }
+
+        public DeviceOpResult Reinstall(string instanceId)
+        {
+            DeviceScanner.Forget(instanceId);
+            return DeviceControl.Reinstall(instanceId);
         }
 
         private void MarkSystemDisk(List<UsbDevice> devices)

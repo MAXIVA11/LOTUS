@@ -95,6 +95,7 @@ namespace Lotus.Core
         private readonly Action<Ledger> saveLedger;
         private readonly Action<LotusEvent> log;
         private readonly Func<DateTime> clock;
+        private readonly IInstallGate gate;
 
         private readonly Dictionary<string, DateTime> firstSeen =
             new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
@@ -106,12 +107,31 @@ namespace Lotus.Core
         private bool firstPass = true;
         private string lastReadOnlyError;
 
+        // Strict mode: Windows refuses to install USB devices, and LOTUS lets the
+        // allowed ones through one by one.
+        private bool gateOwned;
+        private string lastGateNote;
+        private readonly Dictionary<string, DateTime> admitted =
+            new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> admitAttempts =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        /// <summary>How long a device LOTUS just let through stays on the list while Windows installs it.</summary>
+        private static readonly TimeSpan AdmitGrace = TimeSpan.FromSeconds(60);
+        private const int MaxAdmitAttempts = 3;
+        /// <summary>
+        /// Devices that were not installed before LOTUS shut the door. Windows has
+        /// its own reasons for those, usually a missing driver, and LOTUS leaves
+        /// them alone.
+        /// </summary>
+        private readonly HashSet<string> notInstalledBefore = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>A failing device is reported on the first failure and then once every this many passes.</summary>
         private const int FailureLogInterval = 150;
 
         public Enforcer(IDeviceBackend backend, IReadOnlyPolicy readOnly, Ledger ledger, Action<Ledger> saveLedger,
-            Action<LotusEvent> log, Func<DateTime> clock = null)
+            Action<LotusEvent> log, Func<DateTime> clock = null, IInstallGate gate = null)
         {
+            this.gate = gate;
             this.backend = backend ?? throw new ArgumentNullException(nameof(backend));
             this.readOnly = readOnly ?? throw new ArgumentNullException(nameof(readOnly));
             this.ledger = ledger ?? throw new ArgumentNullException(nameof(ledger));
@@ -140,6 +160,7 @@ namespace Lotus.Core
 
             ReleaseAbsent(policy, present, result);
             SyncReadOnly(policy, devices, now);
+            SyncGate(policy, result, now);
             result.ReadOnlyActive = policy.Armed && policy.Storage == StorageMode.ReadOnly &&
                                     lastReadOnlyError == null;
             if (lastReadOnlyError != null) result.Failures++;
@@ -185,6 +206,10 @@ namespace Lotus.Core
             {
                 Release(device, entry, status, result);
             }
+            else if (status.Decision.Verdict == Verdict.Allow)
+            {
+                Admit(device, now);
+            }
         }
 
         /// <summary>
@@ -199,10 +224,16 @@ namespace Lotus.Core
             // Before the first full pass nothing is known about what was already there.
             if (firstPass) return null;
 
-            UsbDevice device = backend.ScanOne(instanceId);
-            if (device == null) return null;
-
             DateTime now = clock();
+            UsbDevice device = backend.ScanOne(instanceId);
+            if (device == null)
+            {
+                // Not a device of its own. It may be one function of a device that
+                // Windows refused to install although the device itself is allowed.
+                AdmitFunction(policy, instanceId, now);
+                return null;
+            }
+
             arrivedNow.Clear();
             NoteArrival(device, now);
             var result = new PassResult();
@@ -268,6 +299,8 @@ namespace Lotus.Core
                 firstSeen.Remove(id);
                 failures.Remove(id);
                 names.Remove(id);
+                admitAttempts.Remove(id);
+                notInstalledBefore.Remove(id);
                 if (!firstPass)
                 {
                     Log(EventTypes.Removed, (string.IsNullOrEmpty(name) ? "A device" : name) + " was disconnected.",
@@ -372,6 +405,9 @@ namespace Lotus.Core
                     result.Released++;
                     Log(EventTypes.Released, entry.Name + " is allowed again.", device.InstanceId, entry.Name);
                 }
+                // A device Windows refused to install before LOTUS switched it off
+                // is still not installed now that it is switched on.
+                Revive(device.InstanceId, clock());
                 return;
             }
 
@@ -508,6 +544,19 @@ namespace Lotus.Core
         public int ReleaseEverything()
         {
             int problems = 0;
+            // The door for new devices opens first, or a device that is released
+            // below would be refused again straight away.
+            try
+            {
+                if (gate != null && gate.Owned) gate.Remove();
+                gateOwned = false;
+            }
+            catch (Exception ex)
+            {
+                problems++;
+                Log(EventTypes.Error, "Could not remove the device installation restrictions. " + ex.Message, "", "");
+            }
+
             foreach (LedgerEntry entry in ledger.Entries)
             {
                 DeviceOpResult op = backend.Unblock(entry.InstanceId);
@@ -541,7 +590,214 @@ namespace Lotus.Core
                 Log(EventTypes.Error, "Could not remove the read-only setting. " + ex.Message, "", "");
             }
             saveLedger(ledger);
+            ReinstallRefused();
             return problems;
+        }
+
+        // ---------- strict mode ----------
+
+        /// <summary>
+        /// Keeps the Windows installation restrictions in step with the policy.
+        /// While they are on, a USB device Windows has not installed before is
+        /// refused, so it never starts. The devices the policy allows are named
+        /// as exceptions.
+        /// </summary>
+        private void SyncGate(Policy policy, PassResult result, DateTime now)
+        {
+            // Developer mode and tests that do not care run without the Windows policy.
+            if (gate == null || gate is NoInstallGate) return;
+            try
+            {
+                List<string> deny = InstallRules.DenyFor(policy.Armed && policy.Strict,
+                    policy.Storage == StorageMode.Block, policy.Pnp == PnpMode.Block);
+                bool owned = gate.Owned;
+
+                if (deny == null)
+                {
+                    gateOwned = false;
+                    lastGateNote = null;
+                    if (!owned) return;
+                    gate.Remove();
+                    Log(EventTypes.PolicyChanged, "Windows installs new USB devices again.", "", "");
+                    ReinstallRefused();
+                    return;
+                }
+                if (!owned && !gate.Supported)
+                {
+                    gateOwned = false;
+                    NoteOnce(EventTypes.Warning,
+                        "This version of Windows cannot refuse new devices before they are installed. " +
+                        "LOTUS switches them off straight after they start instead.");
+                    return;
+                }
+                if (!owned && gate.Foreign)
+                {
+                    gateOwned = false;
+                    NoteOnce(EventTypes.Warning,
+                        "This PC already has device installation restrictions that LOTUS did not set, so LOTUS " +
+                        "leaves them alone. It switches blocked devices off straight after they start instead.");
+                    return;
+                }
+
+                var allow = new List<string>();
+                foreach (DeviceStatus status in result.Devices)
+                {
+                    if (status.Decision.Verdict != Verdict.Allow) continue;
+                    if (ledger.Contains(status.Device.InstanceId)) continue;
+                    allow.Add(status.Device.InstanceId);
+                    foreach (UsbChild child in backend.Children(status.Device.InstanceId)) allow.Add(child.InstanceId);
+                }
+                // A device trusted by its own ID is let in wherever it is plugged
+                // in, without the moment it takes LOTUS to open the door.
+                foreach (TrustEntry entry in policy.Trusted)
+                {
+                    if (entry.Kind == TrustKind.Device) allow.Add(entry.Id);
+                }
+                // What was let through a moment ago may be between two states right now.
+                foreach (string id in new List<string>(admitted.Keys))
+                {
+                    if (now - admitted[id] > AdmitGrace) admitted.Remove(id);
+                    else allow.Add(id);
+                }
+
+                var plan = new InstallPlan(deny, allow);
+                if (!gate.Matches(plan))
+                {
+                    if (!owned)
+                    {
+                        foreach (DeviceStatus status in result.Devices)
+                        {
+                            if (status.Device.InstallRefused) notInstalledBefore.Add(status.Device.InstanceId);
+                        }
+                    }
+                    gate.Apply(plan);
+                    if (!owned)
+                    {
+                        Log(EventTypes.PolicyChanged,
+                            "Windows now refuses to install USB devices this policy blocks, so a device it has " +
+                            "never seen does not start at all.", "", "");
+                    }
+                }
+                gateOwned = true;
+                lastGateNote = null;
+            }
+            catch (Exception ex)
+            {
+                NoteOnce(EventTypes.Error, "Could not change the device installation restrictions. " + ex.Message);
+            }
+        }
+
+        private void NoteOnce(string type, string message)
+        {
+            if (lastGateNote == message) return;
+            lastGateNote = message;
+            Log(type, message, "", "");
+        }
+
+        /// <summary>The policy allows this device. If Windows refused to install it or one of its functions, let it in.</summary>
+        private void Admit(UsbDevice device, DateTime now)
+        {
+            if (!gateOwned) return;
+            if (device.Started) admitAttempts.Remove(device.InstanceId);
+            if (device.InstallRefused)
+            {
+                LetIn(device.InstanceId, device.Name, now);
+                return; // its functions only show up once the device itself runs
+            }
+            foreach (UsbChild child in backend.Children(device.InstanceId))
+            {
+                if (child.Started) admitAttempts.Remove(child.InstanceId);
+                else if (child.InstallRefused) LetIn(child.InstanceId, device.Name, now);
+            }
+        }
+
+        /// <summary>One function of a device arrived. Let it in when the device it belongs to is allowed.</summary>
+        private void AdmitFunction(Policy policy, string instanceId, DateTime now)
+        {
+            if (!gateOwned) return;
+            string parentId = backend.ParentOf(instanceId);
+            if (parentId == null || ledger.Contains(parentId)) return;
+            UsbDevice parent = backend.ScanOne(parentId);
+            if (parent == null || !parent.Started) return;
+            TimeSpan seenFor = firstSeen.TryGetValue(parentId, out DateTime first) ? now - first : TimeSpan.Zero;
+            Decision decision = PolicyEngine.Evaluate(policy, parent, seenFor);
+            if (decision.Verdict != Verdict.Allow) return;
+            foreach (UsbChild child in backend.Children(parentId))
+            {
+                if (string.Equals(child.InstanceId, instanceId, StringComparison.OrdinalIgnoreCase) &&
+                    child.InstallRefused)
+                {
+                    LetIn(child.InstanceId, parent.Name, now);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Names the device as an exception and has Windows meet it again. Windows
+        /// only decides when it meets a device, so naming it is not enough.
+        /// </summary>
+        private void LetIn(string instanceId, string name, DateTime now)
+        {
+            if (notInstalledBefore.Contains(instanceId)) return;
+            admitAttempts.TryGetValue(instanceId, out int attempts);
+            if (attempts >= MaxAdmitAttempts)
+            {
+                if (attempts == MaxAdmitAttempts)
+                {
+                    admitAttempts[instanceId] = attempts + 1;
+                    Log(EventTypes.Warning,
+                        "Windows did not install " + name + " although the policy allows it. " +
+                        "It may have no driver on this PC. Unplug it and plug it in again to retry.",
+                        instanceId, name);
+                }
+                return;
+            }
+            admitAttempts[instanceId] = attempts + 1;
+            admitted[instanceId] = now;
+            gate.AllowInstance(instanceId);
+            backend.Reinstall(instanceId);
+        }
+
+        /// <summary>After LOTUS switched a device back on: if Windows never installed it, have it installed now.</summary>
+        private void Revive(string instanceId, DateTime now)
+        {
+            UsbDevice fresh = backend.ScanOne(instanceId);
+            if (fresh == null || !fresh.InstallRefused) return;
+            if (gateOwned)
+            {
+                admitted[instanceId] = now;
+                gate.AllowInstance(instanceId);
+            }
+            backend.Reinstall(instanceId);
+        }
+
+        /// <summary>
+        /// The restrictions are gone. Devices Windows refused while they were on
+        /// stay refused until Windows meets them again, so make it.
+        /// </summary>
+        private void ReinstallRefused()
+        {
+            try
+            {
+                foreach (UsbDevice device in backend.Scan())
+                {
+                    if (ledger.Contains(device.InstanceId)) continue;
+                    if (device.InstallRefused)
+                    {
+                        backend.Reinstall(device.InstanceId);
+                        continue;
+                    }
+                    foreach (UsbChild child in backend.Children(device.InstanceId))
+                    {
+                        if (child.InstallRefused) backend.Reinstall(child.InstanceId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log(EventTypes.Warning, "Could not have Windows install the devices it refused earlier. " + ex.Message +
+                                        " Unplug them and plug them in again.", "", "");
+            }
         }
 
         private bool ShouldLogFailure(string id)

@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using Lotus.Core.Native;
 
 namespace Lotus.Core
@@ -298,6 +299,98 @@ namespace Lotus.Core
         {
             if (CfgMgr.CM_Get_DevNode_Status(out int status, out int problem, node, 0) != CfgMgr.CR_SUCCESS) return 0;
             return (status & CfgMgr.DN_HAS_PROBLEM) != 0 ? problem : 0;
+        }
+
+        // ---------- installing a device afresh ----------
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SP_DEVINFO_DATA
+        {
+            public int cbSize;
+            public Guid ClassGuid;
+            public int DevInst;
+            public IntPtr Reserved;
+        }
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        private static extern IntPtr SetupDiCreateDeviceInfoList(IntPtr classGuid, IntPtr parentWindow);
+
+        [DllImport("setupapi.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool SetupDiOpenDeviceInfoW(IntPtr set, string instanceId, IntPtr parentWindow,
+            int flags, ref SP_DEVINFO_DATA data);
+
+        [DllImport("setupapi.dll", SetLastError = true)]
+        private static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
+
+        [DllImport("newdev.dll", SetLastError = true)]
+        private static extern bool DiUninstallDevice(IntPtr parentWindow, IntPtr set, ref SP_DEVINFO_DATA data,
+            int flags, out bool needReboot);
+
+        private static readonly IntPtr InvalidHandle = new IntPtr(-1);
+
+        /// <summary>
+        /// Makes Windows forget a connected device and find it again. Windows
+        /// decides whether a device may be installed only when it meets the device,
+        /// so a device it refused stays refused until this is done, even after the
+        /// rule that stopped it is gone. Nothing of value is lost: a device in that
+        /// state has no driver and no settings yet.
+        /// </summary>
+        public static DeviceOpResult Reinstall(string instanceId)
+        {
+            int cr = CfgMgr.CM_Locate_DevNodeW(out int node, instanceId, CfgMgr.CM_LOCATE_DEVNODE_NORMAL);
+            if (cr != CfgMgr.CR_SUCCESS)
+            {
+                return DeviceOpResult.Fail("Could not find the device: " + CfgMgr.Describe(cr) + ".");
+            }
+            bool hasParent = CfgMgr.CM_Get_Parent(out int parent, node, 0) == CfgMgr.CR_SUCCESS;
+
+            string how = Uninstall(instanceId, node);
+            if (how == null)
+            {
+                return DeviceOpResult.Fail("Windows would not forget the device, so it could not be installed again.");
+            }
+
+            // The parent hub notices that the port holds a device it has no record
+            // of, and Windows installs it as a new one.
+            if (hasParent) CfgMgr.CM_Reenumerate_DevNode(parent, CfgMgr.CM_REENUMERATE_RETRY_INSTALLATION);
+            return new DeviceOpResult { Ok = true, Message = how };
+        }
+
+        /// <summary>Returns which call removed the device record, or null when none did.</summary>
+        private static string Uninstall(string instanceId, int node)
+        {
+            try
+            {
+                IntPtr set = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
+                if (set != IntPtr.Zero && set != InvalidHandle)
+                {
+                    try
+                    {
+                        var data = new SP_DEVINFO_DATA { cbSize = Marshal.SizeOf(typeof(SP_DEVINFO_DATA)) };
+                        if (SetupDiOpenDeviceInfoW(set, instanceId, IntPtr.Zero, 0, ref data) &&
+                            DiUninstallDevice(IntPtr.Zero, set, ref data, 0, out bool _))
+                        {
+                            return "DiUninstallDevice";
+                        }
+                    }
+                    finally
+                    {
+                        SetupDiDestroyDeviceInfoList(set);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is DllNotFoundException || ex is EntryPointNotFoundException)
+            {
+            }
+
+            try
+            {
+                if (CfgMgr.CM_Uninstall_DevNode(node, 0) == CfgMgr.CR_SUCCESS) return "CM_Uninstall_DevNode";
+            }
+            catch (EntryPointNotFoundException)
+            {
+            }
+            return null;
         }
 
         /// <summary>
