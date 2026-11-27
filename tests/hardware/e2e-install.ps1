@@ -421,7 +421,10 @@ try {
         Check 'the target stayed switched off through the update' ((Get-PnpDevice -InstanceId $Target).Status -ne 'OK')
         Check 'the new version shows the target as blocked' (Wait-Until { (Get-Device $Target).state -eq 'Blocked' } 15) "state=$((Get-Device $Target).state)"
         Check 'the target was not blocked a second time' ((Count-Events 'blocked' $Target) -eq 1) "blocked events=$(Count-Events 'blocked' $Target)"
-        Check 'strict mode came on with the update' (Wait-Until { Test-Gate } 10)
+        # 1.0 had no strict mode, so its policy never chose it, and it is off unless someone does.
+        Start-Sleep -Seconds 3
+        $taken = Get-Policy
+        Check 'strict mode stays off after the update, because the old policy never chose it' ($null -ne $taken -and -not $taken.Strict -and -not (Test-Gate)) "strict=$($taken.Strict) restrictions=$(Test-Gate)"
         $reply = Send-Policy (New-Policy $false 'Allow' 'Block' $false @($Target))
         Check 'the policy from 1.0 can be disarmed' $reply.Ok "code=$($reply.Code) $($reply.Message)"
         Check 'disarming switches the target back on' (Wait-Until { (Get-PnpDevice -InstanceId $Target).Status -eq 'OK' } 20)
