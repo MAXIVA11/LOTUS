@@ -54,6 +54,7 @@ namespace Lotus.Setup
                 WelcomePath.Text = "Removes " + Installer.InstallDir;
                 PrimaryButton.Content = "REMOVE";
                 PrimaryButton.Style = (Style)FindResource("Btn.Danger");
+                AskForPasswordIfSet(false);
                 return;
             }
 

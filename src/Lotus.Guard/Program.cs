@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.ServiceProcess;
 using System.Text;
 using System.Threading;
@@ -27,7 +28,15 @@ namespace Lotus.Guard
                 case "--scan":
                     return Scan();
                 case "--release-all":
-                    return ReleaseAll();
+                    try
+                    {
+                        return ReleaseAll();
+                    }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                    {
+                        Console.WriteLine("Could not finish. " + ex.Message);
+                        return 1;
+                    }
                 default:
                     PrintUsage();
                     return 2;
@@ -143,15 +152,42 @@ namespace Lotus.Guard
             }
 
             var log = new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile);
-            Ledger ledger = Ledger.Load(LotusPaths.LedgerFile, out string error);
+            // A PC that was updated from 1.0 and never ran the new service still
+            // has its ledger in the old place.
+            string ledgerFile = LotusPaths.LedgerFile;
+            if (!File.Exists(ledgerFile) && !File.Exists(ledgerFile + ".bak") &&
+                (File.Exists(LotusPaths.LegacyLedgerFile) || File.Exists(LotusPaths.LegacyLedgerFile + ".bak")))
+            {
+                ledgerFile = LotusPaths.LegacyLedgerFile;
+            }
+            Ledger ledger = Ledger.Load(ledgerFile, out string error);
             if (error != null) Console.WriteLine("Warning: " + error);
+
+            // Only the service may write the ledger. Run by an administrator, this
+            // command still switches the devices back on. The service drops the
+            // entries itself the next time it starts and finds them released.
+            bool ledgerSaved = true;
             var enforcer = new Enforcer(new WindowsDeviceBackend(), new RegistryReadOnlyPolicy(), ledger,
-                l => l.Save(LotusPaths.LedgerFile), log.Write);
+                l =>
+                {
+                    try
+                    {
+                        l.Save(ledgerFile);
+                    }
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                    {
+                        ledgerSaved = false;
+                    }
+                }, log.Write);
             int count = ledger.Count;
             int problems = enforcer.ReleaseEverything();
             Console.WriteLine(problems == 0
                 ? "Released " + count + " blocked device(s). Removable storage is writable."
                 : problems + " item(s) could not be released. See the activity log.");
+            if (!ledgerSaved && count > 0)
+            {
+                Console.WriteLine("The list of blocked devices belongs to the service and was left as it is.");
+            }
             return problems == 0 ? 0 : 1;
         }
 

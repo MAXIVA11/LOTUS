@@ -72,11 +72,15 @@ The same function runs in the service, in the app (to show what would happen bef
 
 ## Timing
 
-Three things keep the time a blocked device can be active as short as Windows allows.
+How long a blocked device can be active depends on whether this PC has seen it before.
 
-Windows notifies the service when a device is enumerated, which is before its driver starts. The service judges that one device right away, from its descriptors, without scanning the others. A full pass follows 40 milliseconds later and every two seconds after that.
+A device LOTUS has blocked before does not start at all. The disabled mark is stored with the device, and Windows reads it before it loads a driver. In the hardware test a blocked device was taken off the bus and put back by resetting its port, and Windows logged no start for it or for any of its functions.
 
-Devices this PC has seen before, and that the policy blocks on sight, are marked as disabled while they are unplugged. Windows honours the mark when the device is plugged in, so it never starts. The marks are made when the policy changes and are taken back when the policy stops blocking those devices.
+Devices this PC has seen before, and that the policy blocks on sight, get the same mark while they are unplugged. The marks are made when the policy changes and are taken back when the policy stops blocking those devices.
+
+A device Windows has never seen has no record to mark. Windows installs and starts it, and notifies the service as soon as the device exists. The service judges that one device right away, from its descriptors, without scanning the others, and switches it off. Windows finishes starting the device before it carries out the request. On the test PC, across two runs, the device ran for 5 and 7 milliseconds. In one run its HID function never started, and in the other it started about a millisecond before the whole device went off. A full pass over all devices follows 40 milliseconds later and every two seconds after that.
+
+LOTUS is a service, and Windows gives a service no way to act before the device's own driver is loaded. Closing those last milliseconds would take a kernel driver or the device installation restrictions built into Windows.
 
 Windows sometimes refuses to stop a device because a program has it open. Explorer reading a freshly plugged drive is the usual case. LOTUS then marks the device as disabled and cycles its hub port (`IOCTL_USB_HUB_CYCLE_PORT`), which is the same as pulling the plug and putting it back. No program can veto that. A device that still could not be switched off is tried again four times a second.
 

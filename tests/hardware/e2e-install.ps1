@@ -1,4 +1,4 @@
-# End-to-end test of the real product on this PC. Needs an elevated prompt.
+﻿# End-to-end test of the real product on this PC. Needs an elevated prompt.
 #
 # It takes whatever LOTUS is installed (including 1.0) through an update, then
 # installs fresh and checks, on real hardware:
@@ -10,24 +10,32 @@
 #   - the policy only changes with the LOTUS password, through the service
 #   - an edited policy store is put back and the edit is logged
 #   - one chosen USB device is blocked, others keep working
-#   - how fast a device is switched off the first time Windows sees it
+#   - how long a device runs the first time Windows sees it, and that a device
+#     LOTUS blocked before does not start at all when it is plugged in again
 #   - a device can be forced off the bus when Windows will not stop it
 #   - devices that are not plugged in are marked ahead of time
 #   - read-only mode, a service restart, trust, disarm
 #   - removal needs the password and leaves nothing behind
 #   - the setup window: install, update with password, remove with password
 #
+# -OldSetup is the LOTUS 1.0 installer. With it, and with nothing installed, the
+# test first installs 1.0, lets it block the target, and updates over that.
+#
 # -Target is the instance ID of a USB device that may be switched off for a few
 # seconds at a time. Every other connected device is put on the trusted list.
 #
 # At the end LOTUS is installed, disarmed and without a password, and the policy
-# that was there before the test (if any) is put back, disarmed.
+# that was there before the test (if any) is put back, disarmed. That policy is
+# also written to a file next to the log, and -RestorePolicy takes such a file
+# when an earlier run could not put it back itself.
 
 param(
     [string]$Target = '',
     [string]$Setup = '',
     [string]$Log = '',
     [string]$Core = '',
+    [string]$RestorePolicy = '',
+    [string]$OldSetup = '',
     [switch]$LeaveRemoved
 )
 
@@ -90,6 +98,10 @@ function Test-Installed {
     return (Test-Path $installDir) -or [bool](Get-Service LotusGuard -ErrorAction SilentlyContinue) -or (Test-Path $dataDir)
 }
 function Get-ServiceInfo { return Get-CimInstance Win32_Service -Filter "Name='LotusGuard'" }
+function Read-Text([string]$path) {
+    if (-not (Test-Path $path)) { return '' }
+    try { return [string][IO.File]::ReadAllText($path) } catch { return '' }
+}
 
 # ---------- talking to the service ----------
 function New-Guard { return New-Object Lotus.Core.GuardClient ([Lotus.Core.GuardProtocol]::PipeName), $true }
@@ -166,6 +178,11 @@ function Find-Part($window, [string]$id) {
         [System.Windows.Automation.AutomationElement]::AutomationIdProperty, $id)
     return $window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $byId)
 }
+function Test-PartShown($window, [string]$id) {
+    # A collapsed part stays in the tree, marked as off screen.
+    $part = Find-Part $window $id
+    return ($null -ne $part) -and (-not $part.Current.IsOffscreen)
+}
 function Get-PartText($window, [string]$id) {
     $part = Find-Part $window $id
     if ($null -eq $part) { return '' }
@@ -210,34 +227,75 @@ Say "setup sha256=$((Get-FileHash $Setup -Algorithm SHA256).Hash)"
 Say "windows=$([Environment]::OSVersion.Version)"
 
 $savedPolicy = $null
+$savedPolicyFile = "$Log.policy.json"
+if ($RestorePolicy) {
+    if (-not (Test-Path $RestorePolicy)) { Say "RESULT: -RestorePolicy file not found at $RestorePolicy"; exit 1 }
+    $savedPolicy = Get-Content $RestorePolicy -Raw
+    Say "   policy to restore at the end: $RestorePolicy"
+}
 
 try {
     # ---------- A. whatever is installed now ----------
     Section 'A. starting point'
+    $legacyFile = Join-Path $dataDir 'policy.json'
+    $legacyLedger = Join-Path $dataDir 'ledger.json'
+    $oldBlocked = $false
     $existing = Get-ServiceInfo
     if ($existing) {
         $oldVersion = (Get-Item $guard -ErrorAction SilentlyContinue).VersionInfo.FileVersion
         Say "   LOTUS $oldVersion is installed, service state $($existing.State)"
-        $legacyFile = Join-Path $dataDir 'policy.json'
-        $oldTrusted = -1; $oldArmed = $false
-        if (Test-Path $legacyFile) {
-            $savedPolicy = Get-Content $legacyFile -Raw
-            $old = [Lotus.Core.Policy]::FromJson($savedPolicy)
-            $oldTrusted = $old.Trusted.Count; $oldArmed = $old.Armed
-            Say "   its policy: armed=$oldArmed, $oldTrusted trusted entries"
-        }
+        # This is the policy of the person who owns the PC. Keep a copy on disk.
+        if (Test-Path $legacyFile) { $savedPolicy = Get-Content $legacyFile -Raw }
         elseif (Test-Path $storeFile) {
             $stored = Get-Stored
             if ($stored) {
-                $savedPolicy = $stored.Policy.ToJson()
-                $oldTrusted = $stored.Policy.Trusted.Count; $oldArmed = $stored.Policy.Armed
                 if ($stored.Password) { Say 'RESULT: the installed LOTUS has a password this test does not know. Remove LOTUS by hand first.'; exit 1 }
+                $savedPolicy = $stored.Policy.ToJson()
             }
         }
+        if ($savedPolicy) { Set-Content -Path $savedPolicyFile -Value $savedPolicy -Encoding utf8 }
+    }
+    elseif (Test-Installed) {
+        Say '   parts of an earlier run are left and are removed first'
+        $code = Invoke-Setup $Setup @('/uninstall', '/quiet')
+        Say "   exit=$code"
+        if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue }
+        Check 'the leftovers are gone' (Wait-Until { -not (Test-Installed) } 20)
+    }
+    else { Say '   nothing is installed' }
+
+    if (-not (Get-ServiceInfo) -and $OldSetup) {
+        Section 'A. LOTUS 1.0 with a blocked device'
+        Say "   old setup sha256=$((Get-FileHash $OldSetup -Algorithm SHA256).Hash)"
+        $code = Invoke-Setup $OldSetup @('/quiet')
+        Check '1.0 installs' ($code -eq 0 -and (Wait-Until { (Get-ServiceInfo).State -eq 'Running' } 20)) "exit=$code"
+        Say "   installed version $((Get-Item $guard -ErrorAction SilentlyContinue).VersionInfo.FileVersion)"
+        # A policy file as 1.0 wrote it: armed, everything but the target trusted.
+        $entries = @([Lotus.Core.DeviceScanner]::Scan() | Where-Object { $_.InstanceId -ne $Target } | ForEach-Object {
+                [ordered]@{ kind = 'device'; id = $_.InstanceId; name = $_.Name; added = '2026-11-26T21:39:27Z' } })
+        $json = [ordered]@{ version = 1; armed = $true; storage = 'allow'; pnp = 'block'; allowInput = $false; trusted = $entries } | ConvertTo-Json -Depth 4
+        [IO.File]::WriteAllText($legacyFile, $json)
+        $oldBlocked = Wait-Until { (Get-PnpDevice -InstanceId $Target).Status -ne 'OK' } 20
+        Check '1.0 blocks the target' $oldBlocked
+        Check '1.0 keeps its list of blocked devices in the open folder' (Wait-Until { Test-Path $legacyLedger } 10)
+    }
+
+    if (Get-ServiceInfo) {
+        $oldTrusted = -1; $oldArmed = $false
+        if (Test-Path $legacyFile) {
+            $old = [Lotus.Core.Policy]::FromJson((Get-Content $legacyFile -Raw))
+            $oldTrusted = $old.Trusted.Count; $oldArmed = $old.Armed
+        }
+        elseif (Test-Path $storeFile) {
+            $stored = Get-Stored
+            if ($stored) { $oldTrusted = $stored.Policy.Trusted.Count; $oldArmed = $stored.Policy.Armed }
+        }
+        Say "   policy before the update: armed=$oldArmed, $oldTrusted trusted entries"
 
         Section 'A. update over the installed version'
         $code = Invoke-Setup $Setup @('/quiet')
         Check 'update exits with 0' ($code -eq 0) "exit=$code"
+        foreach ($line in @(Get-Content (Join-Path $installDir 'setup.log') -ErrorAction SilentlyContinue)) { Say "   setup.log: $line" }
         $svc = Get-ServiceInfo
         Check 'service runs after the update' ($svc.State -eq 'Running') "state=$($svc.State)"
         Check 'the new version is installed' ((Get-Item $guard).VersionInfo.FileVersion -like '1.1.*') "version=$((Get-Item $guard).VersionInfo.FileVersion)"
@@ -247,17 +305,28 @@ try {
             Check 'update keeps the trusted list' ($stored.Policy.Trusted.Count -eq $oldTrusted) "before=$oldTrusted after=$($stored.Policy.Trusted.Count)"
             Check 'update keeps the armed setting' ($stored.Policy.Armed -eq $oldArmed)
         }
-        Check 'the old policy file is gone' (Wait-Until { -not (Test-Path (Join-Path $dataDir 'policy.json')) } 10)
+        Check 'the old policy file is gone' (Wait-Until { -not (Test-Path $legacyFile) } 10)
         Check 'the old event log registration is gone' (-not (Test-Path $eventLogKey))
-        Check 'no device was switched off by the update' (@((Get-Scan).devices | Where-Object { $_.problem -ne 0 }).Count -eq 0 -or $oldArmed)
+        Check 'the data folder is closed to administrators after the update' (-not (((& icacls.exe $dataDir) -join "`n") -match 'Administrators:[^\n]*\((F|M|W)\)'))
+        Check 'the service reported no error after the update' (@(Get-Events | Where-Object { $_.type -eq 'error' }).Count -eq 0) ((Get-Events | Where-Object { $_.type -eq 'error' } | ForEach-Object { $_.msg }) -join ' / ')
+        if ($oldBlocked) {
+            Check 'the target stayed switched off through the update' ((Get-PnpDevice -InstanceId $Target).Status -ne 'OK')
+            Check 'the new version shows the target as blocked' (Wait-Until { (Get-Device $Target).state -eq 'Blocked' } 15) "state=$((Get-Device $Target).state)"
+            Check 'the list of blocked devices moved into the protected folder' (Wait-Until { (Test-Path (Join-Path $secureDir 'ledger.json')) -and -not (Test-Path $legacyLedger) } 15)
+            Check 'the target was not blocked a second time' ((Count-Events 'blocked' $Target) -eq 1) "blocked events=$(Count-Events 'blocked' $Target)"
+            $status = Get-Status
+            Check 'still armed, and no password yet' ($status.Armed -and -not $status.HasPassword)
+            $reply = Send-Policy (New-Policy $false 'Allow' 'Block' $false @($Target))
+            Check 'a policy from 1.0 can be disarmed without a password' $reply.Ok "code=$($reply.Code) $($reply.Message)"
+            Check 'disarming switches the target back on' (Wait-Until { (Get-PnpDevice -InstanceId $Target).Status -eq 'OK' } 20)
+        }
+        else {
+            Check 'no device was switched off by the update' (@((Get-Scan).devices | Where-Object { $_.problem -ne 0 }).Count -eq 0 -or $oldArmed)
+        }
 
         $code = Remove-Quietly
         Check 'removal after the update exits with 0' ($code -eq 0) "exit=$code"
         Test-NothingLeft 'after update:'
-    }
-    else {
-        Say '   nothing is installed'
-        if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
     Check 'nothing is installed before the fresh install' (-not (Test-Installed))
 
@@ -286,7 +355,7 @@ try {
     $stored = Get-Stored
     Check 'the planted trust entry was not taken over' ($null -ne $stored -and $stored.Policy.Trusted.Count -eq 0) "trusted=$($stored.Policy.Trusted.Count)"
     $setupLog = Join-Path $installDir 'setup.log'
-    Check 'setup wrote down that it replaced the folder' ((Test-Path $setupLog) -and ((Get-Content $setupLog -Raw) -like '*could not be trusted*'))
+    Check 'setup wrote down that it replaced the folder' ((Read-Text $setupLog) -like '*could not be trusted*')
     Remove-Item $outside -Recurse -Force -ErrorAction SilentlyContinue
     $code = Remove-Quietly
     Check 'removal exits with 0' ($code -eq 0) "exit=$code"
@@ -324,6 +393,11 @@ try {
     Check 'no setup log in TEMP' (-not (Test-Path (Join-Path $env:TEMP 'LOTUS-Setup.log')))
     Check 'no event log registration' (-not (Test-Path $eventLogKey))
     Check 'guard logged its start' (Wait-Until { (Count-Events 'guard_started') -ge 1 } 10)
+    if ($code -ne 0 -or $svc.State -ne 'Running') {
+        $setupLog = Join-Path $installDir 'setup.log'
+        foreach ($line in @(Get-Content $setupLog -ErrorAction SilentlyContinue)) { Say "   setup.log: $line" }
+        throw 'The fresh install did not produce a running service, so the remaining sections were skipped.'
+    }
     Check 'notifier is running' (Wait-Until { @(Get-CimInstance Win32_Process -Filter "Name='LOTUS.exe'" | Where-Object { $_.CommandLine -like '*--tray*' }).Count -ge 1 } 10)
 
     Section 'C. permissions'
@@ -342,12 +416,14 @@ try {
     $acl = (& icacls.exe $keyFile) -join "`n"
     Say "   seal key: $(($acl -split "`n" | Select-Object -First 2) -join ' | ')"
     Check 'seal key: only the service account is listed' (($acl -match 'NT AUTHORITY\\SYSTEM:\(F\)') -and -not ($acl -match 'Administrators') -and -not ($acl -match 'Users'))
+    Say "   owners: store=$((Get-Acl $storeFile -ErrorAction SilentlyContinue).Owner) key=$((Get-Acl $keyFile -ErrorAction SilentlyContinue).Owner) log=$((Get-Acl $eventsFile -ErrorAction SilentlyContinue).Owner)"
     $read = $true; try { $null = [IO.File]::ReadAllBytes($keyFile) } catch { $read = $false }
     Check 'an administrator cannot read the seal key' (-not $read)
     $wrote = $true; try { [IO.File]::AppendAllText($storeFile, ' ') } catch { $wrote = $false }
     Check 'an administrator cannot write the policy store' (-not $wrote)
     Check 'the status file is there for the notifier' (Test-Path (Join-Path $dataDir 'status.json'))
-    Check 'the status file does not hold the password record' (-not ((Get-Content (Join-Path $dataDir 'status.json') -Raw) -match 'salt|hash'))
+    Check 'the status file does not hold the password record' (-not ((Read-Text (Join-Path $dataDir 'status.json')) -match 'salt|hash'))
+    Check 'the service reported no problem with the folder permissions' (@(Get-Events | Where-Object { $_.type -eq 'error' }).Count -eq 0) ((Get-Events | Where-Object { $_.type -eq 'error' } | ForEach-Object { $_.msg }) -join ' / ')
 
     Section 'C. the service resists Windows tools'
     & sc.exe stop LotusGuard | Out-Null
@@ -397,7 +473,7 @@ try {
     Check 'the password event was logged' ((Count-Events 'security') -ge 1)
     $pnp = Get-PnpDevice -InstanceId $Target -ErrorAction SilentlyContinue
     Check 'Device Manager agrees it is off' ($pnp.Status -ne 'OK')
-    Check 'the status file says armed' ((Get-Content (Join-Path $dataDir 'status.json') -Raw) -match '"armed": true')
+    Check 'the status file says armed' ((Read-Text (Join-Path $dataDir 'status.json')) -match '"armed": true')
 
     Section 'D. the password guards every change'
     $open = New-Policy $false 'Allow' 'Allow' $true
@@ -452,6 +528,21 @@ try {
         Check 'LOTUS switches it off again' (Wait-Until { (Get-PnpDevice -InstanceId $Target).Status -ne 'OK' } 15)
     }
 
+    Section 'E. replugging a blocked device'
+    # Resetting the hub port is the same as pulling the plug and putting it back.
+    # The device was blocked before, so Windows must bring it back switched off
+    # without ever starting it.
+    $t0 = Get-Date
+    $replug = [Lotus.Core.DeviceControl]::ForceOff($Target)
+    Say "   port reset: ok=$($replug.Ok) $($replug.Message)"
+    Check 'the device left the bus and came back switched off' ($replug.Ok -and (Get-PnpDevice -InstanceId $Target -ErrorAction SilentlyContinue).Status -ne 'OK') $replug.Message
+    Start-Sleep -Seconds 2
+    $model = ($Target -split '\\')[1]
+    $replugEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Kernel-PnP/Configuration'; StartTime = $t0 } -ErrorAction SilentlyContinue | Where-Object { $_.Message -like "*$model*" } | Sort-Object TimeCreated)
+    foreach ($e in $replugEvents) { Say "   Windows: $($e.TimeCreated.ToString('HH:mm:ss.fff')) event $($e.Id) $(($e.Message -split "`n")[0])" }
+    Check 'Windows did not start it, or any part of it, after the replug' (@($replugEvents | Where-Object { $_.Id -eq 410 }).Count -eq 0)
+    Check 'it is still blocked two seconds later' ((Get-Device $Target).state -eq 'Blocked')
+
     # ---------- F. how fast is a device switched off ----------
     Section 'F. first contact'
     # Deleting the device record makes Windows forget the device. Scanning for
@@ -476,14 +567,35 @@ try {
     Say "   after the scan was requested: device seen at $seen ms, seen running at $(if ($started -lt 0) { 'never' } else { "$started ms" }), seen switched off at $off ms"
     if ($seen -ge 0 -and $off -ge 0) { Say "   switched off $($off - $seen) ms after this test first saw it" }
     Check 'the device is switched off again after Windows found it anew' ($off -ge 0)
-    Check 'this test never saw it running' ($started -lt 0) "running at $started ms"
     Start-Sleep -Seconds 2
-    $pnpEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Kernel-PnP/Configuration'; StartTime = $t0 } -ErrorAction SilentlyContinue | Where-Object { $_.Message -like "*$Target*" } | Sort-Object TimeCreated)
+    $model = ($Target -split '\\')[1]
+    $pnpEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Kernel-PnP/Configuration'; StartTime = $t0 } -ErrorAction SilentlyContinue | Where-Object { $_.Message -like "*$model*" } | Sort-Object TimeCreated)
     foreach ($e in $pnpEvents) { Say "   Windows: $($e.TimeCreated.ToString('HH:mm:ss.fff')) event $($e.Id) $(($e.Message -split "`n")[0])" }
-    $startedByWindows = @($pnpEvents | Where-Object { $_.Id -eq 410 }).Count
-    Check 'Windows never reports the device as started' ($startedByWindows -eq 0) "started events=$startedByWindows"
-    foreach ($e in (Get-Events | Where-Object { $_.id -eq $Target -and (Get-EventTime $_) -ge $t0 })) { Say "   LOTUS:   $((Get-EventTime $e).ToString('HH:mm:ss.fff')) $($e.type)" }
+    $mine = @(Get-Events | Where-Object { $_.id -eq $Target -and (Get-EventTime $_) -ge $t0 })
+    foreach ($e in $mine) { Say "   LOTUS:   $((Get-EventTime $e).ToString('HH:mm:ss.fff')) $($e.type)" }
     Check 'the new block was logged' ((Count-Events 'blocked' $Target) -gt $blocksBefore)
+
+    # A device Windows has never seen has no record LOTUS could mark ahead of
+    # time. Windows starts the device itself, LOTUS switches it off, and what
+    # counts is how long that took and whether any of its functions came up.
+    $deviceStart = $pnpEvents | Where-Object { $_.Id -eq 410 -and $_.Message -like "*$Target*" } | Select-Object -First 1
+    $partsStarted = @($pnpEvents | Where-Object { $_.Id -eq 410 -and $_.Message -notlike "*$Target*" })
+    $blockEvent = $mine | Where-Object { $_.type -eq 'blocked' } | Select-Object -Last 1
+    if ($null -eq $deviceStart) {
+        Say '   Windows never started the device'
+        Check 'a device Windows has never seen is off within a quarter of a second' ($off -ge 0)
+    }
+    elseif ($null -ne $blockEvent) {
+        $ran = [int]((Get-EventTime $blockEvent) - $deviceStart.TimeCreated).TotalMilliseconds
+        Say "   the device ran for about $ran ms before LOTUS had it switched off"
+        Check 'a device Windows has never seen is off within a quarter of a second' ($ran -lt 250) "ran for $ran ms"
+    }
+    else { Check 'a device Windows has never seen is off within a quarter of a second' $false 'no block event' }
+    if ($partsStarted.Count -eq 0) { Say '   none of its functions was started' }
+    foreach ($part in $partsStarted) {
+        $early = if ($null -ne $blockEvent) { [int]((Get-EventTime $blockEvent) - $part.TimeCreated).TotalMilliseconds } else { -1 }
+        Say "   one of its functions came up $early ms before the block: $(($part.Message -split "`n")[0])"
+    }
 
     Section 'F. forcing a device off the bus'
     # Trust the target so it runs, then use the forced path directly: mark it
@@ -493,10 +605,16 @@ try {
     $reply = Send-Policy $all $password
     Check 'trusting the target works' $reply.Ok "code=$($reply.Code) $($reply.Message)"
     Check 'target works again and shows as trusted' (Wait-Until { $d = Get-Device $Target; $d.state -eq 'Trusted' -and $d.problem -eq 0 } 20)
-    Check 'release was logged' ((Count-Events 'released' $Target) -ge 1)
+    # The service writes the event once it has finished switching the device on.
+    # Until then the device is still its to manage, and it would undo the mark.
+    Check 'release was logged' (Wait-Until { (Count-Events 'released' $Target) -ge 1 } 15)
+    Check 'the service no longer manages the target' (Wait-Until { -not ((Read-Text (Join-Path $secureDir 'ledger.json')) -like "*$($Target.Replace('\', '\\'))*") } 10)
+    Start-Sleep -Milliseconds 500
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $forced = [Lotus.Core.DeviceControl]::ForceOff($Target)
     Say "   forced off: ok=$($forced.Ok) in $($watch.ElapsedMilliseconds) ms $($forced.Message)"
+    $enumKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\$Target"
+    Say "   afterwards: ConfigFlags=$((Get-ItemProperty $enumKey -ErrorAction SilentlyContinue).ConfigFlags) status=$((Get-PnpDevice -InstanceId $Target -ErrorAction SilentlyContinue).Status)"
     Check 'the forced switch-off works on this hardware' $forced.Ok $forced.Message
     Check 'Device Manager shows it disabled' ((Get-PnpDevice -InstanceId $Target -ErrorAction SilentlyContinue).Status -ne 'OK')
     $restored = [Lotus.Core.DeviceControl]::Unblock($Target)
@@ -574,7 +692,7 @@ try {
     Check 'setup window opens' ($null -ne $w)
     if ($null -ne $w) {
         Check 'welcome page offers INSTALL' (Wait-Button $w 'PrimaryButton' 'INSTALL' 10) "button=$(Get-PartText $w 'PrimaryButton')"
-        Check 'no password is asked on a new PC' ($null -eq (Find-Part $w 'PasswordField'))
+        Check 'no password is asked on a new PC' (-not (Test-PartShown $w 'PasswordField'))
         Push-Button $w 'PrimaryButton'
         $done = Wait-Button $w 'PrimaryButton' 'OPEN LOTUS' 90
         $summary = Get-PartText $w 'WorkSummary'
@@ -596,7 +714,7 @@ try {
     Check 'setup window opens again' ($null -ne $w)
     if ($null -ne $w) {
         Check 'second run offers UPDATE' (Wait-Button $w 'PrimaryButton' 'UPDATE' 10) "button=$(Get-PartText $w 'PrimaryButton')"
-        Check 'the window asks for the password' ($null -ne (Find-Part $w 'PasswordField'))
+        Check 'the window asks for the password' (Test-PartShown $w 'PasswordField')
         Set-Field $w 'PasswordField' 'not the password'
         Push-Button $w 'PrimaryButton'
         Check 'a wrong password is refused in the window' (Wait-Until { (Get-PartText $w 'PasswordError') -ne '' } 15) "error=$(Get-PartText $w 'PasswordError')"
@@ -623,9 +741,10 @@ try {
     Check 'uninstaller window opens' ($null -ne $w)
     if ($null -ne $w) {
         Check 'uninstaller offers REMOVE' (Wait-Button $w 'PrimaryButton' 'REMOVE' 10) "button=$(Get-PartText $w 'PrimaryButton')"
-        Check 'the uninstaller asks for the password' ($null -ne (Find-Part $w 'PasswordField'))
+        Check 'the uninstaller asks for the password' (Test-PartShown $w 'PasswordField')
         Push-Button $w 'PrimaryButton'
-        Check 'an empty password is refused' (Wait-Until { (Get-PartText $w 'PasswordError') -ne '' } 15)
+        Check 'an empty password is refused' (Wait-Until { (Get-PartText $w 'PasswordError') -ne '' } 15) "button=$(Get-PartText $w 'PrimaryButton')"
+        Check 'the uninstaller still offers REMOVE' ((Get-PartText $w 'PrimaryButton') -eq 'REMOVE')
         Check 'LOTUS is still there' ((Get-ServiceInfo).State -eq 'Running')
         Set-Field $w 'PasswordField' $password
         Push-Button $w 'PrimaryButton'
@@ -650,9 +769,10 @@ finally {
     Section 'K. final state'
     Get-Process LOTUS-Setup, Uninstall -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     try {
-        if (Get-Service LotusGuard -ErrorAction SilentlyContinue) {
-            $code = Remove-Quietly $(if ((Get-Status).HasPassword) { $password } else { '' })
+        if (Test-Installed) {
+            $code = Remove-Quietly $(if ((Get-Status).HasPassword -or (Get-Stored).Password) { $password } else { '' })
             Say "   removed what was left: exit=$code"
+            $null = Wait-Until { -not (Test-Installed) } 20
         }
         if (-not $LeaveRemoved) {
             if (Test-Installed) { Say '   LOTUS could not be removed cleanly, so it is not installed again' }
@@ -665,6 +785,7 @@ finally {
                     $reply = Send-Policy $mine
                     Check 'your earlier policy is back, disarmed' $reply.Ok "code=$($reply.Code) $($reply.Message)"
                     Say "   $($mine.Trusted.Count) trusted entries restored"
+                    if ($reply.Ok) { Remove-Item $savedPolicyFile -Force -ErrorAction SilentlyContinue }
                 }
                 Check 'final state: disarmed, no password, nothing blocked' ((Get-Scan).policy -like 'disarmed*' -and -not (Get-Status).HasPassword -and @((Get-Scan).devices | Where-Object { $_.problem -ne 0 }).Count -eq 0)
             }
