@@ -261,6 +261,13 @@ namespace Lotus.Tests
             return bus.Scan().Single(d => d.InstanceId == id);
         }
 
+        /// <summary>Lets the second pass by that LOTUS gives Windows for its own installation attempt.</summary>
+        private void AfterWindowsHadItsGo(Policy policy)
+        {
+            now = now.AddSeconds(1.1);
+            enforcer.RunOnce(policy);
+        }
+
         private static UsbDevice Headset()
         {
             UsbDevice headset = Devices.Headset();
@@ -349,9 +356,14 @@ namespace Lotus.Tests
             bus.Plug(Devices.Mouse()); // a mouse, and keyboards and mice stay allowed
             Assert.True(On(Devices.MouseId).InstallRefused);
 
+            // The exception is named at once. Windows gets a second for its own
+            // attempt before LOTUS has it start over.
             enforcer.FastPass(TrustedOnly(), Devices.MouseId);
-            Assert.True(On(Devices.MouseId).Started);
             Assert.True(gate.Allows(Devices.MouseId));
+            Assert.Equal(0, bus.ReinstallCalls);
+
+            AfterWindowsHadItsGo(TrustedOnly());
+            Assert.True(On(Devices.MouseId).Started);
             Assert.Equal(1, bus.ReinstallCalls);
             Assert.DoesNotContain(events, e => e.Type == EventTypes.Blocked);
         }
@@ -379,6 +391,7 @@ namespace Lotus.Tests
             bus.Plug(Devices.Stick());
             Assert.True(On(Devices.StickId).InstallRefused);
             enforcer.FastPass(policy, Devices.StickId);
+            AfterWindowsHadItsGo(policy);
             Assert.True(On(Devices.StickId).Started);
         }
 
@@ -396,6 +409,8 @@ namespace Lotus.Tests
             Assert.All(functions, f => Assert.True(f.InstallRefused));
 
             enforcer.FastPass(policy, Devices.HeadsetId);
+            Assert.All(bus.Children(Devices.HeadsetId), f => Assert.True(gate.Allows(f.InstanceId)));
+            AfterWindowsHadItsGo(policy);
             Assert.All(bus.Children(Devices.HeadsetId), f => Assert.True(f.Started));
             Assert.Equal(2, bus.ReinstallCalls);
         }
@@ -409,6 +424,13 @@ namespace Lotus.Tests
             bus.Plug(Headset());
             string first = bus.Children(Devices.HeadsetId)[0].InstanceId;
 
+            string second = bus.Children(Devices.HeadsetId)[1].InstanceId;
+
+            Assert.Null(enforcer.FastPass(policy, first));
+            Assert.True(gate.Allows(first));
+            Assert.False(gate.Allows(second));
+
+            now = now.AddSeconds(1.1);
             Assert.Null(enforcer.FastPass(policy, first));
             Assert.True(bus.Children(Devices.HeadsetId)[0].Started);
             Assert.False(bus.Children(Devices.HeadsetId)[1].Started);
@@ -451,6 +473,19 @@ namespace Lotus.Tests
             Assert.True(On(Devices.StickId).Started);
             Assert.False(ledger.Contains(Devices.StickId));
             Assert.Contains(events, e => e.Type == EventTypes.Released && e.DeviceId == Devices.StickId);
+        }
+
+        [Fact]
+        public void A_pass_with_a_device_still_being_let_in_reports_unfinished_business()
+        {
+            enforcer.RunOnce(TrustedOnly());
+            bus.Plug(Devices.Mouse());
+
+            Assert.Equal(1, enforcer.RunOnce(TrustedOnly()).Pending);
+            now = now.AddSeconds(1.1);
+            Assert.Equal(1, enforcer.RunOnce(TrustedOnly()).Pending); // Windows was just asked to start over
+            now = now.AddSeconds(0.3);
+            Assert.Equal(0, enforcer.RunOnce(TrustedOnly()).Pending); // and the device runs
         }
 
         [Fact]
@@ -541,7 +576,7 @@ namespace Lotus.Tests
             bus.NoDriver.Add(Devices.MouseId);
             bus.Plug(Devices.Mouse());
 
-            for (int pass = 0; pass < 6; pass++)
+            for (int pass = 0; pass < 8; pass++)
             {
                 now = now.AddSeconds(2);
                 enforcer.RunOnce(TrustedOnly());
@@ -556,7 +591,34 @@ namespace Lotus.Tests
             bus.NoDriver.Clear();
             bus.Plug(Devices.Mouse());
             enforcer.FastPass(TrustedOnly(), Devices.MouseId);
+            AfterWindowsHadItsGo(TrustedOnly());
             Assert.True(On(Devices.MouseId).Started);
+        }
+
+        [Fact]
+        public void A_device_that_was_just_let_in_is_not_let_in_again_while_Windows_installs_it()
+        {
+            enforcer.RunOnce(TrustedOnly());
+            bus.NoDriver.Add(Devices.MouseId); // stands in for "still installing": it keeps looking refused
+            bus.Plug(Devices.Mouse());
+
+            enforcer.FastPass(TrustedOnly(), Devices.MouseId);
+            now = now.AddMilliseconds(40);
+            enforcer.FastPass(TrustedOnly(), Devices.MouseId); // Windows reports the same device again
+            now = now.AddMilliseconds(40);
+            PassResult early = enforcer.RunOnce(TrustedOnly());
+            Assert.Equal(0, bus.ReinstallCalls); // Windows is still at it
+            Assert.Equal(1, early.Pending);
+
+            AfterWindowsHadItsGo(TrustedOnly());
+            Assert.Equal(1, bus.ReinstallCalls);
+            now = now.AddSeconds(1);
+            enforcer.RunOnce(TrustedOnly());
+            Assert.Equal(1, bus.ReinstallCalls); // and now it gets three seconds for the new attempt
+
+            now = now.AddSeconds(4);
+            enforcer.RunOnce(TrustedOnly());
+            Assert.Equal(2, bus.ReinstallCalls);
         }
 
         [Fact]
@@ -583,7 +645,7 @@ namespace Lotus.Tests
             enforcer.RunOnce(TrustedOnly());
             bus.Plug(Devices.Mouse());
             enforcer.FastPass(TrustedOnly(), Devices.MouseId);
-            enforcer.RunOnce(TrustedOnly());
+            AfterWindowsHadItsGo(TrustedOnly());
             Assert.True(gate.Allows(Devices.MouseId));
 
             bus.Unplug(Devices.MouseId);

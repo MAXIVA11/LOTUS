@@ -242,7 +242,7 @@ def banner(still=False, width=1200, height=380):
             ("POLICY", "ARMED", CYAN),
             ("STORAGE", "BLOCK", PINK),
             ("PNP", "TRUSTED ONLY", PINK),
-            ("PASSWORD", "SET", YELLOW),
+            ("STORE", "ENCRYPTED", YELLOW),
         ]
         for i, (label, value, colour) in enumerate(rows):
             y = 138 + i * 27

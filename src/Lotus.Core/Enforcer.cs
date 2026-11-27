@@ -79,6 +79,8 @@ namespace Lotus.Core
         public int Blocked;
         public int Released;
         public int Failures;
+        /// <summary>Devices the policy allows that Windows has not installed yet. LOTUS looks again soon.</summary>
+        public int Pending;
         public bool ReadOnlyActive;
     }
 
@@ -113,11 +115,34 @@ namespace Lotus.Core
         private string lastGateNote;
         private readonly Dictionary<string, DateTime> admitted =
             new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, int> admitAttempts =
-            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, LetInState> lettingIn =
+            new Dictionary<string, LetInState>(StringComparer.OrdinalIgnoreCase);
+        private int pendingNow;
+
+        /// <summary>Where LOTUS stands with a device it is letting through.</summary>
+        private sealed class LetInState
+        {
+            /// <summary>When the device was named as an exception.</summary>
+            public DateTime AllowedAt;
+            /// <summary>When LOTUS last had Windows forget the device and find it again.</summary>
+            public DateTime? ReinstalledAt;
+            public int Attempts;
+            public bool Reported;
+        }
         /// <summary>How long a device LOTUS just let through stays on the list while Windows installs it.</summary>
         private static readonly TimeSpan AdmitGrace = TimeSpan.FromSeconds(60);
         private const int MaxAdmitAttempts = 3;
+        /// <summary>
+        /// Windows is in the middle of its own attempt to install a device when it
+        /// reports the device. An exception named in that moment may still be in
+        /// time, and then nothing more is needed. If it was too late, Windows has
+        /// to be made to forget the device and find it again, but only once its
+        /// own attempt is over: doing it earlier lets the old attempt mark the
+        /// new device as failed.
+        /// </summary>
+        private static readonly TimeSpan InstallSettle = TimeSpan.FromSeconds(1);
+        /// <summary>How long Windows gets for an installation LOTUS asked for before LOTUS asks again.</summary>
+        private static readonly TimeSpan AdmitSettle = TimeSpan.FromSeconds(3);
         /// <summary>
         /// Devices that were not installed before LOTUS shut the door. Windows has
         /// its own reasons for those, usually a missing driver, and LOTUS leaves
@@ -150,6 +175,7 @@ namespace Lotus.Core
             List<UsbDevice> devices = backend.Scan();
 
             TrackArrivals(devices, now);
+            pendingNow = 0;
 
             var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (UsbDevice device in devices)
@@ -161,6 +187,7 @@ namespace Lotus.Core
             ReleaseAbsent(policy, present, result);
             SyncReadOnly(policy, devices, now);
             SyncGate(policy, result, now);
+            result.Pending = pendingNow;
             result.ReadOnlyActive = policy.Armed && policy.Storage == StorageMode.ReadOnly &&
                                     lastReadOnlyError == null;
             if (lastReadOnlyError != null) result.Failures++;
@@ -299,7 +326,7 @@ namespace Lotus.Core
                 firstSeen.Remove(id);
                 failures.Remove(id);
                 names.Remove(id);
-                admitAttempts.Remove(id);
+                lettingIn.Remove(id);
                 notInstalledBefore.Remove(id);
                 if (!firstPass)
                 {
@@ -390,6 +417,14 @@ namespace Lotus.Core
 
         private void Release(UsbDevice device, LedgerEntry entry, DeviceStatus status, PassResult result)
         {
+            // A device Windows refused to install before LOTUS switched it off is
+            // installed the moment it is switched on. Name it as an exception
+            // first, so that Windows does not refuse it again.
+            if (gateOwned)
+            {
+                admitted[device.InstanceId] = clock();
+                gate.AllowInstance(device.InstanceId);
+            }
             DeviceOpResult op = backend.Unblock(device.InstanceId);
             if (op.Ok)
             {
@@ -405,9 +440,6 @@ namespace Lotus.Core
                     result.Released++;
                     Log(EventTypes.Released, entry.Name + " is allowed again.", device.InstanceId, entry.Name);
                 }
-                // A device Windows refused to install before LOTUS switched it off
-                // is still not installed now that it is switched on.
-                Revive(device.InstanceId, clock());
                 return;
             }
 
@@ -656,7 +688,11 @@ namespace Lotus.Core
                 // What was let through a moment ago may be between two states right now.
                 foreach (string id in new List<string>(admitted.Keys))
                 {
-                    if (now - admitted[id] > AdmitGrace) admitted.Remove(id);
+                    if (now - admitted[id] > AdmitGrace)
+                    {
+                        admitted.Remove(id);
+                        lettingIn.Remove(id);
+                    }
                     else allow.Add(id);
                 }
 
@@ -698,7 +734,7 @@ namespace Lotus.Core
         private void Admit(UsbDevice device, DateTime now)
         {
             if (!gateOwned) return;
-            if (device.Started) admitAttempts.Remove(device.InstanceId);
+            if (device.Started) lettingIn.Remove(device.InstanceId);
             if (device.InstallRefused)
             {
                 LetIn(device.InstanceId, device.Name, now);
@@ -706,7 +742,7 @@ namespace Lotus.Core
             }
             foreach (UsbChild child in backend.Children(device.InstanceId))
             {
-                if (child.Started) admitAttempts.Remove(child.InstanceId);
+                if (child.Started) lettingIn.Remove(child.InstanceId);
                 else if (child.InstallRefused) LetIn(child.InstanceId, device.Name, now);
             }
         }
@@ -733,18 +769,38 @@ namespace Lotus.Core
         }
 
         /// <summary>
-        /// Names the device as an exception and has Windows meet it again. Windows
-        /// only decides when it meets a device, so naming it is not enough.
+        /// Lets a device through that the policy allows and Windows refused. The
+        /// device is named as an exception at once. If Windows had already decided
+        /// against it by then, it is made to forget the device and find it again a
+        /// moment later, because Windows only decides when it meets a device.
         /// </summary>
         private void LetIn(string instanceId, string name, DateTime now)
         {
             if (notInstalledBefore.Contains(instanceId)) return;
-            admitAttempts.TryGetValue(instanceId, out int attempts);
-            if (attempts >= MaxAdmitAttempts)
+
+            if (!lettingIn.TryGetValue(instanceId, out LetInState state))
             {
-                if (attempts == MaxAdmitAttempts)
+                state = new LetInState { AllowedAt = now };
+                lettingIn[instanceId] = state;
+                admitted[instanceId] = now;
+                gate.AllowInstance(instanceId);
+                pendingNow++;
+                return;
+            }
+
+            DateTime last = state.ReinstalledAt ?? state.AllowedAt;
+            TimeSpan wait = state.ReinstalledAt == null ? InstallSettle : AdmitSettle;
+            if (now - last < wait)
+            {
+                pendingNow++;
+                return;
+            }
+
+            if (state.Attempts >= MaxAdmitAttempts)
+            {
+                if (!state.Reported)
                 {
-                    admitAttempts[instanceId] = attempts + 1;
+                    state.Reported = true;
                     Log(EventTypes.Warning,
                         "Windows did not install " + name + " although the policy allows it. " +
                         "It may have no driver on this PC. Unplug it and plug it in again to retry.",
@@ -752,23 +808,13 @@ namespace Lotus.Core
                 }
                 return;
             }
-            admitAttempts[instanceId] = attempts + 1;
+
+            state.Attempts++;
+            state.ReinstalledAt = now;
             admitted[instanceId] = now;
             gate.AllowInstance(instanceId);
             backend.Reinstall(instanceId);
-        }
-
-        /// <summary>After LOTUS switched a device back on: if Windows never installed it, have it installed now.</summary>
-        private void Revive(string instanceId, DateTime now)
-        {
-            UsbDevice fresh = backend.ScanOne(instanceId);
-            if (fresh == null || !fresh.InstallRefused) return;
-            if (gateOwned)
-            {
-                admitted[instanceId] = now;
-                gate.AllowInstance(instanceId);
-            }
-            backend.Reinstall(instanceId);
+            pendingNow++;
         }
 
         /// <summary>

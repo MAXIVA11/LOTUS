@@ -146,6 +146,22 @@ function Get-Family([string]$id) {
     $model = ($id -split '\\')[1]
     return @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like "USB\$model*" } | Sort-Object InstanceId)
 }
+function Repair-NotWorking {
+    # Has Windows forget every USB device that is not working, together with
+    # the device it is a function of, and find it again.
+    $broken = Get-NotWorking
+    if ($broken.Count -eq 0) { return }
+    Say "   not working: $(($broken | ForEach-Object { "$($_.InstanceId)=$($_.Status)" }) -join ', '). Windows is made to forget them and find them again."
+    $roots = @{}
+    foreach ($d in $broken) {
+        $parent = [string](Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName DEVPKEY_Device_Parent -ErrorAction SilentlyContinue).Data
+        if ($parent -like 'USB\VID_*') { $roots[$parent.ToUpperInvariant()] = $true } else { $roots[$d.InstanceId.ToUpperInvariant()] = $true }
+    }
+    foreach ($id in $roots.Keys) { $null = Forget-Device $id }
+    Start-Sleep -Seconds 1
+    Start-Process pnputil.exe -ArgumentList '/scan-devices' -WindowStyle Hidden -Wait
+    $null = Wait-Until { (Get-NotWorking).Count -eq 0 } 20
+}
 function Test-Unreadable([string]$path) {
     # True when the file shows none of the words a policy or a device list is made of.
     try { $bytes = [IO.File]::ReadAllBytes($path) } catch { return $true }
@@ -335,6 +351,8 @@ if ((Test-Path $gateKey) -and -not (Test-Gate)) {
 try {
     # ---------- A. whatever is installed now ----------
     Section 'A. starting point'
+    Repair-NotWorking
+    Check 'every connected USB device works before the test' ((Get-NotWorking).Count -eq 0) ((Get-NotWorking | ForEach-Object { $_.InstanceId }) -join ', ')
     $existing = Get-ServiceInfo
     if ($existing) {
         $oldVersion = (Get-Item $guard -ErrorAction SilentlyContinue).VersionInfo.FileVersion
@@ -752,7 +770,7 @@ try {
         Say "   all of it working $($watch.ElapsedMilliseconds) ms after the scan was requested"
         Start-Sleep -Seconds 2
         $after = Get-Family $Composite
-        Say "   after: $(($after | ForEach-Object { "$($_.InstanceId)=$($_.Status)" }) -join ', ')"
+        Say "   after: $(($after | ForEach-Object { "$($_.InstanceId)=$($_.Status)/$((Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName DEVPKEY_Device_ProblemCode -ErrorAction SilentlyContinue).Data)" }) -join ', ')"
         $pnpEvents = Get-PnpEvents $t0 $Composite
         Say-PnpEvents $pnpEvents
         Check 'Windows refused the device and its functions first' (@($pnpEvents | Where-Object { $_.Id -eq 402 }).Count -ge 2) "refusals=$(@($pnpEvents | Where-Object { $_.Id -eq 402 }).Count)"
@@ -1048,14 +1066,8 @@ finally {
         Say "EXCEPTION in the final step: $($_.Exception.Message)"
     }
     # A device that was refused or forgotten along the way gets one more chance.
+    Repair-NotWorking
     $off = Get-NotWorking
-    if ($off.Count -gt 0) {
-        Say "   not working yet: $(($off | ForEach-Object { $_.InstanceId }) -join ', '). Forgetting them and scanning again."
-        foreach ($d in $off) { & pnputil.exe /remove-device "$($d.InstanceId)" | Out-Null }
-        Start-Process pnputil.exe -ArgumentList '/scan-devices' -WindowStyle Hidden -Wait
-        Start-Sleep -Seconds 5
-        $off = Get-NotWorking
-    }
     Check 'no connected USB device is switched off at the end' ($off.Count -eq 0) (($off | ForEach-Object { $_.InstanceId }) -join ', ')
     Check 'no installation restrictions are left at the end' (-not (Test-Path $gateKey))
     Say ''
