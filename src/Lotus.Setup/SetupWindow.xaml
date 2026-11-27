@@ -72,8 +72,20 @@
                     <TextBlock x:Name="WelcomeNote" Style="{StaticResource T.Body}"
                                Foreground="{StaticResource B.Yellow}" />
                 </Border>
-                <TextBlock x:Name="WelcomePath" Style="{StaticResource T.Label}" Margin="0,16,0,0"
+                <!-- Asked on a new installation only. -->
+                <StackPanel x:Name="TrustPanel" Margin="0,16,0,0" Visibility="Collapsed">
+                    <CheckBox x:Name="TrustConnected" Style="{StaticResource Check}"
+                              AutomationProperties.AutomationId="TrustConnected"
+                              AutomationProperties.Name="Trust the USB devices that are connected right now">
+                        <TextBlock Text="Trust the USB devices that are connected right now" />
+                    </CheckBox>
+                    <TextBlock Style="{StaticResource T.Label}" Margin="31,3,0,0" TextWrapping="Wrap"
+                               Text="They go on the trusted list, so they keep working when you later block storage or allow trusted devices only." />
+                </StackPanel>
+                <TextBlock x:Name="WelcomePath" Style="{StaticResource T.Label}" Margin="0,14,0,0"
                            TextWrapping="Wrap" />
+                <TextBlock Style="{StaticResource T.Label}" Margin="0,4,0,0" TextWrapping="Wrap"
+                           Text="LOTUS comes as it is, without warranty. You use it at your own risk." />
             </StackPanel>
 
             <!-- progress and result -->

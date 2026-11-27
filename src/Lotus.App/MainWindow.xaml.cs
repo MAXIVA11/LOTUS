@@ -26,6 +26,7 @@ namespace Lotus.App
             vm = new MainViewModel(backend);
             DataContext = vm;
             InitializeComponent();
+            ShowCustomHint();
 
             OpenLogButton.Visibility = backend.LogFolder == null ? Visibility.Collapsed : Visibility.Visible;
             timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
@@ -186,6 +187,66 @@ namespace Lotus.App
             if ((sender as FrameworkElement)?.DataContext is DeviceRow row)
             {
                 _ = Save(vm.WithTrust(row, TrustKind.Model), false);
+            }
+        }
+
+        // ---------- adding a trust entry by hand ----------
+
+        private TrustKind CustomKind()
+        {
+            if (CustomVendor.IsChecked == true) return TrustKind.Vendor;
+            return CustomModel.IsChecked == true ? TrustKind.Model : TrustKind.Device;
+        }
+
+        private void ShowCustomHint(string problem = null)
+        {
+            // Fires once while the window is still being put together.
+            if (CustomHint == null) return;
+            CustomHint.Text = problem ?? MainViewModel.CustomTrustHint(CustomKind());
+            CustomHint.Foreground = (System.Windows.Media.Brush)FindResource(problem == null ? "B.Dim" : "B.Pink");
+        }
+
+        private void OnCustomKind(object sender, RoutedEventArgs e)
+        {
+            ShowCustomHint();
+        }
+
+        private void OnCustomTyped(object sender, System.Windows.Controls.TextChangedEventArgs e)
+        {
+            ShowCustomHint();
+        }
+
+        private void OnCustomKey(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key != System.Windows.Input.Key.Enter) return;
+            e.Handled = true;
+            OnAddCustomTrust(sender, null);
+        }
+
+        private async void OnAddCustomTrust(object sender, RoutedEventArgs e)
+        {
+            if (!TrustEntry.TryParse(CustomKind(), CustomId.Text, CustomName.Text, out TrustEntry entry, out string problem))
+            {
+                ShowCustomHint(problem);
+                return;
+            }
+            Policy next = vm.WithCustomTrust(entry, !string.IsNullOrWhiteSpace(CustomName.Text));
+            if (next == null)
+            {
+                ShowCustomHint("That is on the trusted list already.");
+                return;
+            }
+            CustomAdd.IsEnabled = false;
+            try
+            {
+                if (!await Save(next, false)) return;
+                CustomId.Text = "";
+                CustomName.Text = "";
+                ShowCustomHint();
+            }
+            finally
+            {
+                CustomAdd.IsEnabled = true;
             }
         }
 

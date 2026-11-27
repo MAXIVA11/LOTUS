@@ -92,7 +92,11 @@ namespace Lotus.Core
         /// <summary>The policy every device is blocked under when the policy store cannot be trusted.</summary>
         public static Policy LockdownPolicy()
         {
-            return new Policy { Armed = true, Storage = StorageMode.Block, Pnp = PnpMode.Block, AllowInput = true };
+            // Locked down means as closed as LOTUS gets, so new devices are refused before they start.
+            return new Policy
+            {
+                Armed = true, Storage = StorageMode.Block, Pnp = PnpMode.Block, AllowInput = true, Strict = true
+            };
         }
 
         public void Start()

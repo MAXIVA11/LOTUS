@@ -102,7 +102,7 @@ namespace Lotus.Tests
         [Fact]
         public void Armed_lists_every_setting()
         {
-            var policy = new Policy { Armed = true, Storage = StorageMode.ReadOnly, Pnp = PnpMode.Block };
+            var policy = new Policy { Armed = true, Storage = StorageMode.ReadOnly, Pnp = PnpMode.Block, Strict = true };
             policy.AddTrust(TrustEntry.ForDevice(Devices.Stick()));
             Assert.Equal(
                 "armed, removable storage read-only, other USB devices blocked unless trusted " +
@@ -118,7 +118,7 @@ namespace Lotus.Tests
             Assert.Equal(
                 "armed, removable storage blocked, other USB devices allowed, new storage devices refused " +
                 "before they start, 0 trusted entries.",
-                GuardWorker.Summarize(new Policy { Armed = true, Storage = StorageMode.Block }));
+                GuardWorker.Summarize(new Policy { Armed = true, Storage = StorageMode.Block, Strict = true }));
         }
 
         [Fact]

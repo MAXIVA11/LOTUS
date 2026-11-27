@@ -562,7 +562,8 @@ namespace Lotus.App
                     Kind = entry.Kind,
                     Id = entry.Id,
                     Name = string.IsNullOrWhiteSpace(entry.Name) ? "Unnamed device" : entry.Name,
-                    KindText = entry.Kind == TrustKind.Model ? "WHOLE MODEL" : "THIS DEVICE",
+                    KindText = entry.Kind == TrustKind.Vendor ? "WHOLE VENDOR"
+                        : entry.Kind == TrustKind.Model ? "WHOLE MODEL" : "THIS DEVICE",
                     Added = "added " + entry.AddedUtc.ToLocalTime().ToString("dd MMM yyyy", CultureInfo.InvariantCulture),
                     Connected = lastDevices.Any(s => entry.Matches(s.Device))
                 });
@@ -687,6 +688,42 @@ namespace Lotus.App
             Policy next = live.Clone();
             next.AddTrust(kind == TrustKind.Model ? TrustEntry.ForModel(row.Device) : TrustEntry.ForDevice(row.Device));
             return next;
+        }
+
+        /// <summary>
+        /// The current policy with an entry someone typed in. Null when the list
+        /// has that entry already. Nothing is saved yet.
+        /// </summary>
+        public Policy WithCustomTrust(TrustEntry entry, bool named)
+        {
+            if (entry == null) return null;
+            if (entry.Kind == TrustKind.Device)
+            {
+                // A device that is plugged in is known, so what it does is recorded with the entry.
+                DeviceStatus seen = lastDevices.FirstOrDefault(s => s.Device.InstanceId == entry.Id);
+                if (seen != null)
+                {
+                    TrustEntry recorded = TrustEntry.ForDevice(seen.Device);
+                    if (named) recorded.Name = entry.Name;
+                    entry = recorded;
+                }
+            }
+            Policy next = live.Clone();
+            return next.AddTrust(entry) ? next : null;
+        }
+
+        /// <summary>What to type for each kind of entry, shown under the field.</summary>
+        public static string CustomTrustHint(TrustKind kind)
+        {
+            switch (kind)
+            {
+                case TrustKind.Vendor:
+                    return "A vendor ID, for example 046D. Every device that vendor makes will work, also ones you have never seen.";
+                case TrustKind.Model:
+                    return "A vendor ID and a product ID, for example 046D:C52B. Every unit of that model will work.";
+                default:
+                    return "An instance path, for example USB\\VID_0781&PID_5567\\4C530001230505116353. That one device will work.";
+            }
         }
 
         /// <summary>

@@ -20,6 +20,7 @@ namespace Lotus.Linux
         private static string sysfsRoot = LinuxDeviceBackend.DefaultRoot;
         private static bool dev;
         private static bool yes;
+        private static string entryName;
 
         private static int Main(string[] args)
         {
@@ -34,6 +35,7 @@ namespace Lotus.Linux
                     case "--dev": dev = true; break;
                     case "--yes":
                     case "-y": yes = true; break;
+                    case "--name" when i + 1 < args.Length: entryName = args[++i]; break;
                     default: rest.Add(args[i]); break;
                 }
             }
@@ -55,7 +57,8 @@ namespace Lotus.Linux
                     case "strict": return SetSwitch(Argument(rest, 1), (p, on) => p.Strict = on,
                         "New devices the policy blocks are not switched on at all.",
                         "New devices the policy blocks are switched off right after they start.");
-                    case "trust": return Trust(Argument(rest, 1), rest.Contains("--model"));
+                    case "trust": return Trust(rest);
+                    case "trusted": return TrustedList();
                     case "untrust": return Untrust(Argument(rest, 1));
                     case "log": return ShowLog(Argument(rest, 1));
                     case "release-all": return ReleaseAll();
@@ -466,13 +469,115 @@ namespace Lotus.Linux
             return state.Devices.Select(d => d.Device).FirstOrDefault(d => d.InstanceId == id);
         }
 
+        /// <summary>
+        /// "lotus trust 3" trusts a connected device. With a word in front it
+        /// takes what was typed instead: a vendor, a model or an instance path,
+        /// for a device that need not be plugged in.
+        /// </summary>
+        private static int Trust(List<string> rest)
+        {
+            string first = Argument(rest, 1);
+            switch ((first ?? "").ToLowerInvariant())
+            {
+                case "vendor": return TrustTyped(TrustKind.Vendor, Argument(rest, 2));
+                case "model": return TrustTyped(TrustKind.Model, Argument(rest, 2));
+                case "id": return TrustTyped(TrustKind.Device, Argument(rest, 2));
+                case "connected": return TrustConnected();
+                default: return Trust(first, rest.Contains("--model"));
+            }
+        }
+
+        private static int TrustTyped(TrustKind kind, string text)
+        {
+            if (!TrustEntry.TryParse(kind, text, entryName, out TrustEntry entry, out string problem))
+            {
+                Ui.Error(problem);
+                return 2;
+            }
+            State state = Read();
+            if (kind == TrustKind.Device)
+            {
+                // A device that is plugged in is known, so what it does is recorded with the entry.
+                UsbDevice seen = state.Devices.Select(d => d.Device).FirstOrDefault(d => d.InstanceId == entry.Id);
+                if (seen != null)
+                {
+                    TrustEntry recorded = TrustEntry.ForDevice(seen);
+                    if (!string.IsNullOrWhiteSpace(entryName)) recorded.Name = entry.Name;
+                    entry = recorded;
+                }
+            }
+            Policy next = state.Policy.Clone();
+            if (!next.AddTrust(entry))
+            {
+                Ui.Note("That is on the trusted list already.");
+                return 0;
+            }
+            if (kind == TrustKind.Vendor)
+            {
+                Ui.Note("This covers every device that vendor makes, also ones you have never seen.");
+            }
+            return Apply(next, kind == TrustKind.Vendor ? "Every device from vendor " + entry.Id.Substring(4) + " is trusted."
+                : kind == TrustKind.Model ? "Every " + entry.Id + " is trusted."
+                : entry.Id + " is trusted.");
+        }
+
+        private static int TrustConnected()
+        {
+            State state = Read();
+            Policy next = state.Policy.Clone();
+            List<TrustEntry> added = next.TrustAll(state.Devices.Select(d => d.Device));
+            if (added.Count == 0)
+            {
+                Ui.Note(state.Devices.Count == 0
+                    ? "No USB device is connected."
+                    : "Every connected USB device is on the trusted list already.");
+                return 0;
+            }
+            foreach (TrustEntry entry in added)
+            {
+                Console.WriteLine("     " + Ui.Paint(Shorten(entry.Name, 40).PadRight(40), Ui.Text) + "  " +
+                                  Ui.Paint(KindText(entry.Kind), Ui.Dim));
+            }
+            return Apply(next, added.Count == 1
+                ? "One connected device is trusted."
+                : added.Count + " connected devices are trusted.");
+        }
+
+        private static string KindText(TrustKind kind)
+        {
+            return kind == TrustKind.Vendor ? "whole vendor" : kind == TrustKind.Model ? "whole model" : "this device";
+        }
+
+        private static int TrustedList()
+        {
+            State state = Read();
+            Ui.Banner();
+            if (state.Policy.Trusted.Count == 0)
+            {
+                Ui.Note("Nothing is trusted yet.");
+                return 0;
+            }
+            foreach (TrustEntry entry in state.Policy.Trusted)
+            {
+                bool connected = state.Devices.Any(d => entry.Matches(d.Device));
+                Console.WriteLine("  " + Ui.Paint(KindText(entry.Kind).ToUpperInvariant().PadRight(12), Ui.Cyan) + "  " +
+                                  Ui.Paint(Shorten(string.IsNullOrWhiteSpace(entry.Name) ? "Unnamed device" : entry.Name, 44), Ui.Text) +
+                                  (connected ? Ui.Paint("  connected", Ui.Dim) : ""));
+                Console.WriteLine("  " + "".PadRight(14) + Ui.Paint(entry.Id, Ui.Dim));
+            }
+            Console.WriteLine();
+            Ui.Note("Take one off the list with its ID: lotus untrust <id>");
+            return 0;
+        }
+
         private static int Trust(string which, bool model)
         {
             State state = Read();
             UsbDevice device = Pick(state, which);
             if (device == null)
             {
-                Ui.Error("Name the device by its number or its ID from \"lotus devices\".");
+                Ui.Error("Name the device by its number or its ID from \"lotus devices\". For a device that is not " +
+                         "plugged in: lotus trust vendor|model|id <value>.");
                 return 2;
             }
             Policy next = state.Policy.Clone();
@@ -506,10 +611,19 @@ namespace Lotus.Linux
                 // Not connected: go by what the trusted list itself says.
                 next.RemoveTrust(TrustKind.Device, which);
                 next.RemoveTrust(TrustKind.Model, which);
+                next.RemoveTrust(TrustKind.Vendor, which);
+                // Or by what was typed when the entry was made: 046D, 046D:C52B.
+                foreach (TrustKind kind in new[] { TrustKind.Vendor, TrustKind.Model })
+                {
+                    if (next.Trusted.Count == before && TrustEntry.TryParse(kind, which, null, out TrustEntry typed, out _))
+                    {
+                        next.RemoveTrust(kind, typed.Id);
+                    }
+                }
             }
             if (next.Trusted.Count == before)
             {
-                Ui.Error("Nothing on the trusted list matches. Name the device by its number, its ID, or a model such as VID_0781&PID_5567.");
+                Ui.Error("Nothing on the trusted list matches. \"lotus trusted\" shows the list with the ID of every entry.");
                 return 2;
             }
             return Change(p =>
@@ -552,13 +666,18 @@ namespace Lotus.Linux
                                   USB drives, card readers, cameras and phones.
   lotus usb allow|trusted         Every other USB device: all of them, or only trusted ones.
   lotus input on|off              Keep keyboards and mice working under ""trusted"".
-  lotus strict on|off             Refuse new blocked devices before they start.
+  lotus strict on|off             Refuse new blocked devices before they start. Off unless you turn it on.
   lotus arm                       Start enforcing the rules.
   lotus disarm                    Stop enforcing. Nothing is blocked.
 
-  lotus trust <number|id>         Trust one device.
+  lotus trust <number|id>         Trust one device that is plugged in.
   lotus trust <number|id> --model Trust every unit of that model.
-  lotus untrust <number|id>       Take a device or a model off the trusted list.
+  lotus trust connected           Trust every device that is plugged in right now.
+  lotus trust vendor <vid>        Trust by hand, for a device that need not be plugged in:
+  lotus trust model <vid:pid>     every device of a vendor (046D), every unit of a model
+  lotus trust id <instance path>  (046D:C52B), or one device by its path. --name ""..."" names it.
+  lotus trusted                   The trusted list.
+  lotus untrust <number|id>       Take a device, a model or a vendor off the trusted list.
 
   lotus release-all               Disarm and switch every blocked device back on.
 

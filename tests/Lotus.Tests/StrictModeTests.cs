@@ -252,12 +252,12 @@ namespace Lotus.Tests
 
         private static Policy StorageBlocked()
         {
-            return new Policy { Armed = true, Storage = StorageMode.Block };
+            return new Policy { Armed = true, Storage = StorageMode.Block, Strict = true };
         }
 
         private static Policy TrustedOnly()
         {
-            return new Policy { Armed = true, Pnp = PnpMode.Block, AllowInput = true };
+            return new Policy { Armed = true, Pnp = PnpMode.Block, AllowInput = true, Strict = true };
         }
 
         private UsbDevice On(string id)
@@ -302,10 +302,10 @@ namespace Lotus.Tests
         [Fact]
         public void Nothing_is_refused_unless_the_policy_blocks_something_and_asks_for_it()
         {
-            enforcer.RunOnce(new Policy { Storage = StorageMode.Block, Pnp = PnpMode.Block }); // disarmed
+            enforcer.RunOnce(new Policy { Storage = StorageMode.Block, Pnp = PnpMode.Block, Strict = true }); // disarmed
             Assert.False(gate.Owned);
 
-            enforcer.RunOnce(new Policy { Armed = true, Storage = StorageMode.ReadOnly });
+            enforcer.RunOnce(new Policy { Armed = true, Storage = StorageMode.ReadOnly, Strict = true });
             Assert.False(gate.Owned);
 
             Policy relaxed = TrustedOnly();
@@ -683,16 +683,33 @@ namespace Lotus.Tests
         }
 
         [Fact]
-        public void The_setting_survives_a_round_trip_and_defaults_to_on()
+        public void The_setting_survives_a_round_trip_and_is_off_unless_chosen()
         {
             Policy off = TrustedOnly();
             off.Strict = false;
             Assert.False(Policy.FromJson(off.ToJson()).Strict);
             Assert.True(Policy.FromJson(TrustedOnly().ToJson()).Strict);
-            // A policy written before the setting existed.
-            Assert.True(Policy.FromJson("{\"version\":1,\"armed\":true,\"storage\":\"block\",\"pnp\":\"allow\"}").Strict);
+            // A new policy, and one written before the setting existed.
+            Assert.False(new Policy().Strict);
+            Assert.False(Policy.FromJson("{\"version\":1,\"armed\":true,\"storage\":\"block\",\"pnp\":\"allow\"}").Strict);
             Assert.False(off.SettingsEqual(TrustedOnly()));
             Assert.False(off.Clone().Strict);
+            Assert.True(TrustedOnly().Clone().Strict);
+        }
+
+        [Fact]
+        public void A_new_policy_is_disarmed_allows_everything_and_keeps_keyboards_working()
+        {
+            var fresh = new Policy();
+            Assert.False(fresh.Armed);
+            Assert.Equal(StorageMode.Allow, fresh.Storage);
+            Assert.Equal(PnpMode.Allow, fresh.Pnp);
+            Assert.True(fresh.AllowInput);
+            Assert.False(fresh.Strict);
+            Assert.Empty(fresh.Trusted);
+
+            Policy read = Policy.FromJson("{}");
+            Assert.True(fresh.SettingsEqual(read));
         }
     }
 }

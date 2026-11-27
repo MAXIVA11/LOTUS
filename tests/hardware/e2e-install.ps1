@@ -18,6 +18,9 @@
 #   - a device LOTUS blocked before does not start when it is plugged in again
 #   - a device can be forced off the bus when Windows will not stop it
 #   - read-only mode, trust, disarm
+#   - what a new installation starts with, and trust entries added by hand
+#     for a vendor, a model and an instance path
+#   - an installation that puts the connected devices on the trusted list
 #   - the rescue command, with the service running and without it
 #   - a wrecked store locks LOTUS down, and running setup again resets it
 #   - removal leaves nothing behind, the Windows restrictions included
@@ -588,6 +591,10 @@ try {
     Check 'no device is off' (@($scan.devices | Where-Object { $_.problem -ne 0 }).Count -eq 0)
     Check 'every device was read from its own descriptors' (@($scan.devices | Where-Object { -not $_.described }).Count -eq 0) (($scan.devices | Where-Object { -not $_.described } | ForEach-Object { $_.name }) -join ', ')
     Check 'Windows restricts nothing while LOTUS is disarmed' (-not (Test-Path $gateKey))
+    $fresh = Get-Policy
+    $asNew = $null -ne $fresh -and -not $fresh.Armed -and $fresh.Storage -eq 'Allow' -and $fresh.Pnp -eq 'Allow' -and
+        $fresh.AllowInput -and -not $fresh.Strict -and $fresh.Trusted.Count -eq 0
+    Check 'a new installation: disarmed, storage and devices allowed, keyboards kept, strict mode off, nothing trusted' $asNew "armed=$($fresh.Armed) storage=$($fresh.Storage) pnp=$($fresh.Pnp) input=$($fresh.AllowInput) strict=$($fresh.Strict) trusted=$($fresh.Trusted.Count)"
 
     Section 'D. arming'
     $strict = New-Policy $true 'Block' 'Block' $false @($Target)
@@ -867,6 +874,38 @@ try {
     Check 'disarming switches it back on' ($reply.Ok -and (Wait-Until { $d = Get-Device $Target; $d.problem -eq 0 -and $d.state -eq 'Allowed' } 20))
     Check 'disarming takes the Windows restrictions away' (Wait-Until { -not (Test-Path $gateKey) } 15)
 
+    Section 'G. trust entries added by hand'
+    $parts = $Target -split '\\'
+    $vendor = ($parts[1] -split '&')[0].Substring(4)
+    $product = ($parts[1] -split '&')[1].Substring(4)
+    $base = New-Policy $true 'Allow' 'Block' $false @($Target)
+    $reply = Send-Policy $base
+    Check 'trusted only, target not trusted: it is blocked' ($reply.Ok -and (Wait-Until { (Get-Device $Target).state -eq 'Blocked' } 20))
+    $typed = @(
+        @{ kind = 'Vendor'; text = $vendor.ToLower(); what = "the vendor $vendor" },
+        @{ kind = 'Model'; text = "${vendor}:$product"; what = "the model ${vendor}:$product" },
+        @{ kind = 'Device'; text = $Target.ToLower(); what = 'the instance path' }
+    )
+    foreach ($case in $typed) {
+        $entry = $null; $problem = $null
+        $parsed = [Lotus.Core.TrustEntry]::TryParse([Lotus.Core.TrustKind]$case.kind, $case.text, 'e2e by hand', [ref]$entry, [ref]$problem)
+        Check "typing $($case.what) makes an entry" ($parsed -and $null -ne $entry) "problem=$problem"
+        if (-not $parsed) { continue }
+        $with = $base.Clone()
+        [void]$with.AddTrust($entry)
+        $reply = Send-Policy $with
+        $works = $reply.Ok -and (Wait-Until { $d = Get-Device $Target; $d.problem -eq 0 -and $d.state -eq 'Trusted' } 25)
+        Check "trusting $($case.what) switches the target on" $works "code=$($reply.Code) state=$((Get-Device $Target).state)"
+        $kept = Get-Policy
+        Check "the entry for $($case.what) is in the stored policy" ($null -ne $kept -and @($kept.Trusted | Where-Object { $_.Kind -eq $case.kind -and $_.Id -eq $entry.Id }).Count -eq 1)
+        $reply = Send-Policy $base
+        Check "without the entry the target is blocked again" ($reply.Ok -and (Wait-Until { (Get-Device $Target).state -eq 'Blocked' } 25))
+    }
+    $bad = $null; $problem = $null
+    Check 'something that is not an ID is refused with a reason' (-not [Lotus.Core.TrustEntry]::TryParse([Lotus.Core.TrustKind]::Model, 'printer', $null, [ref]$bad, [ref]$problem) -and $problem)
+    $reply = Send-Policy (New-Policy $false 'Allow' 'Block' $false @($Target))
+    Check 'disarmed again, the target works' ($reply.Ok -and (Wait-Until { $d = Get-Device $Target; $d.problem -eq 0 -and $d.state -eq 'Allowed' } 20))
+
     # ---------- H. the app ----------
     Section 'H. app'
     $app = Start-Process -FilePath (Join-Path $installDir 'LOTUS.exe') -PassThru
@@ -961,6 +1000,22 @@ try {
     $pnp = Get-PnpDevice -InstanceId $Target -ErrorAction SilentlyContinue
     Check 'target works after removal' ($pnp.Status -eq 'OK') "status=$($pnp.Status)"
 
+    Section 'J. an installation that trusts what is connected'
+    $code = Invoke-Setup $Setup @('/quiet', '/trust-connected')
+    Check 'setup with /trust-connected exits with 0' ($code -eq 0) "exit=$code"
+    Say-SetupLog
+    $null = Wait-Until { $null -ne (Get-Policy) } 25
+    $after = Get-Policy
+    $connected = @([Lotus.Core.DeviceScanner]::Scan())
+    $missed = @($connected | Where-Object { $null -eq $after -or -not $after.IsTrusted($_) })
+    Say "   connected: $($connected.Count), trusted entries: $($after.Trusted.Count)"
+    Check 'every connected device is on the trusted list' ($null -ne $after -and $connected.Count -gt 0 -and $missed.Count -eq 0) (($missed | ForEach-Object { $_.Name }) -join ', ')
+    Check 'nothing else was set: still disarmed, everything allowed, strict mode off' ($null -ne $after -and -not $after.Armed -and $after.Storage -eq 'Allow' -and $after.Pnp -eq 'Allow' -and -not $after.Strict)
+    Check 'no device was switched off by it' (@((Get-Scan).devices | Where-Object { $_.problem -ne 0 }).Count -eq 0)
+    Check 'the setup log says what was trusted' ((Get-Content (Join-Path $installDir 'setup.log') -Raw) -match 'put on the trusted list')
+    $code = Remove-Quietly
+    Check 'removal after it exits with 0' ($code -eq 0) "exit=$code"
+
     # ---------- K. the setup window ----------
     Section 'K. setup window: install'
     $p = Start-Process -FilePath $Setup -PassThru
@@ -969,6 +1024,15 @@ try {
     if ($null -ne $w) {
         Check 'welcome page offers INSTALL' (Wait-Button $w 'PrimaryButton' 'INSTALL' 10) "button=$(Get-PartText $w 'PrimaryButton')"
         Check 'the window has no password field' ($null -eq (Find-Part $w 'PasswordField'))
+        $ask = Find-Part $w 'TrustConnected'
+        $asked = $null -ne $ask -and -not $ask.Current.IsOffscreen
+        Check 'the window asks whether to trust the connected devices' $asked
+        if ($asked) {
+            $toggle = $ask.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+            Check 'the answer is no until someone ticks it' ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::Off) "state=$($toggle.Current.ToggleState)"
+            $toggle.Toggle()
+            Check 'it can be ticked' ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On)
+        }
         Push-Button $w 'PrimaryButton'
         $done = Wait-Button $w 'PrimaryButton' 'OPEN LOTUS' 90
         $summary = Get-PartText $w 'WorkSummary'
@@ -976,6 +1040,11 @@ try {
         Check 'install finishes and offers OPEN LOTUS' $done "button=$(Get-PartText $w 'PrimaryButton')"
         Check 'install reports no warnings' ($summary -eq 'LOTUS is installed and disarmed. Open it to choose your policy.') "summary=$summary"
         Check 'policy is disarmed after the window install' ((Get-Scan).policy -like 'disarmed*')
+        if ($asked) {
+            $after = Get-Policy
+            $missed = @([Lotus.Core.DeviceScanner]::Scan() | Where-Object { $null -eq $after -or -not $after.IsTrusted($_) })
+            Check 'with the box ticked, every connected device is trusted after the install' ($null -ne $after -and $after.Trusted.Count -gt 0 -and $missed.Count -eq 0) (($missed | ForEach-Object { $_.Name }) -join ', ')
+        }
         Push-Button $w 'SecondaryButton'
         $code = Wait-Exit $p
         Check 'CLOSE ends setup with exit code 0' ($code -eq 0) "exit=$code"
@@ -1005,6 +1074,8 @@ try {
     try { Say "   the service took $($timer.EndInvoke($pending)) ms to answer a question asked at the same moment" } catch { Say "   the service could not be timed: $($_.Exception.Message)" }
     $timer.Dispose()
     if ($offered) {
+        $ask = Find-Part $w 'TrustConnected'
+        Check 'an update does not ask about trusting devices' ($null -eq $ask -or $ask.Current.IsOffscreen)
         Push-Button $w 'PrimaryButton'
         Check 'update finishes' (Wait-Button $w 'PrimaryButton' 'OPEN LOTUS' 90) "summary=$(Get-PartText $w 'WorkSummary')"
         $null = Wait-Until { $null -ne (Get-Policy) } 20

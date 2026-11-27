@@ -108,7 +108,7 @@ namespace Lotus.Tests
         [InlineData("{\"pnp\":\"maybe\"}")]
         [InlineData("{\"armed\":\"yes\"}")]
         [InlineData("{\"version\":99}")]
-        [InlineData("{\"trusted\":[{\"kind\":\"vendor\",\"id\":\"X\"}]}")]
+        [InlineData("{\"trusted\":[{\"kind\":\"planet\",\"id\":\"X\"}]}")]
         [InlineData("[]")]
         public void Refuses_settings_it_does_not_understand(string json)
         {

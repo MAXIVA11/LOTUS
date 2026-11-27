@@ -544,17 +544,62 @@
                     <Grid x:Name="PageTrusted" Visibility="Collapsed">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         <StackPanel Margin="0,0,0,14">
                             <ui:GlitchText Text="TRUSTED" Style="{StaticResource PageTitle}" />
                             <TextBlock Style="{StaticResource T.Dim}"
-                                       Text="Devices on this list are never blocked. Add one from the Devices page while it is plugged in." />
+                                       Text="Devices on this list are never blocked. Add one from the Devices page while it is plugged in, or by hand below." />
                         </StackPanel>
-                        <TextBlock Grid.Row="1" Style="{StaticResource T.Dim}" Margin="0,24,0,0"
+
+                        <!-- Adding an entry for a device that is not plugged in. -->
+                        <Border Grid.Row="1" Style="{StaticResource Card}" Padding="18,13,18,14" Margin="0,0,0,14">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="318" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="200" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.ColumnSpan="4" Text="ADD BY HAND" Style="{StaticResource T.Label}"
+                                           Margin="0,0,0,8" />
+                                <UniformGrid Grid.Row="1" Columns="3" Margin="-6,0,6,0" VerticalAlignment="Center">
+                                    <RadioButton x:Name="CustomVendor" Style="{StaticResource Seg.Item}" GroupName="customTrust"
+                                                 Tag="ok" Content="VENDOR" FontSize="14" Checked="OnCustomKind" />
+                                    <RadioButton x:Name="CustomModel" Style="{StaticResource Seg.Item}" GroupName="customTrust"
+                                                 Tag="ok" Content="MODEL" FontSize="14" IsChecked="True" Checked="OnCustomKind" />
+                                    <RadioButton x:Name="CustomDevice" Style="{StaticResource Seg.Item}" GroupName="customTrust"
+                                                 Tag="ok" Content="DEVICE" FontSize="14" Checked="OnCustomKind" />
+                                </UniformGrid>
+                                <TextBox x:Name="CustomId" Grid.Row="1" Grid.Column="1" Style="{StaticResource Field}" VerticalAlignment="Center" Height="38"
+                                         AutomationProperties.AutomationId="CustomTrustId"
+                                         AutomationProperties.Name="ID to trust" KeyDown="OnCustomKey"
+                                         TextChanged="OnCustomTyped" />
+                                <TextBox x:Name="CustomName" Grid.Row="1" Grid.Column="2" Style="{StaticResource Field}" VerticalAlignment="Center" Height="38"
+                                         Margin="10,0,0,0" MaxLength="96"
+                                         AutomationProperties.AutomationId="CustomTrustName"
+                                         AutomationProperties.Name="Name, optional" KeyDown="OnCustomKey" />
+                                <Button x:Name="CustomAdd" Grid.Row="1" Grid.Column="3" Style="{StaticResource Btn.SmallPrimary}"
+                                        Content="ADD" Width="96" Margin="12,0,-2,0" VerticalAlignment="Center"
+                                        AutomationProperties.AutomationId="CustomTrustAdd" Click="OnAddCustomTrust" />
+                                <TextBlock x:Name="CustomHint" Grid.Row="2" Grid.ColumnSpan="2" Style="{StaticResource T.Label}"
+                                           Margin="0,8,0,0" TextWrapping="Wrap"
+                                           AutomationProperties.AutomationId="CustomTrustHint" />
+                                <TextBlock Grid.Row="2" Grid.Column="2" Style="{StaticResource T.Label}" Margin="10,8,0,0"
+                                           Text="A name for the list. Optional." />
+                            </Grid>
+                        </Border>
+
+                        <TextBlock Grid.Row="2" Style="{StaticResource T.Dim}" Margin="0,24,0,0"
                                    Text="Nothing is trusted yet."
                                    Visibility="{Binding NoTrusted, Converter={StaticResource Show}}" />
-                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Focusable="False"
+                        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Focusable="False"
                                       Margin="0,0,-14,0" Padding="0,0,14,0">
                             <ItemsControl ItemsSource="{Binding Trusted}" Focusable="False">
                                 <ItemsControl.ItemTemplate>
@@ -708,7 +753,7 @@
                                         <TextBlock Style="{StaticResource T.Label}" Margin="0,4,0,0"
                                                    Text="Local Operational Trusted USB System" />
                                         <TextBlock Style="{StaticResource T.Label}" Margin="0,4,0,0"
-                                                   Text="Open source under the MIT License" />
+                                                   Text="Open source under the MIT License. It comes as it is, without warranty, and you use it at your own risk." />
                                         <TextBlock Style="{StaticResource T.Label}" Margin="0,4,0,0"
                                                    Foreground="{StaticResource B.Cyan}"
                                                    Text="github.com/MAXIVA11/LOTUS" />

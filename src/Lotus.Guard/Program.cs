@@ -27,6 +27,8 @@ namespace Lotus.Guard
                     return RunConsole(args.Length >= 3 && args[1].ToLowerInvariant() == "--dev" ? args[2] : null);
                 case "--scan":
                     return Scan(args.Length >= 2 && args[1].ToLowerInvariant() == "--dev");
+                case "--trust-connected":
+                    return TrustConnected(args.Length >= 2 && args[1].ToLowerInvariant() == "--dev");
                 case "--release-all":
                     try
                     {
@@ -53,6 +55,9 @@ namespace Lotus.Guard
             Console.WriteLine("  LotusGuard --console --dev <folder>");
             Console.WriteLine("                             For developers: keep all data in <folder> and listen on a");
             Console.WriteLine("                             separate pipe. Leaves the installed LOTUS alone.");
+            Console.WriteLine("  LotusGuard --trust-connected");
+            Console.WriteLine("                             Put every USB device that is connected right now on the");
+            Console.WriteLine("                             trusted list. Setup uses this when you ask it to.");
             Console.WriteLine("  LotusGuard --release-all   Disarm LOTUS, switch every blocked device back on and lift");
             Console.WriteLine("                             read-only mode. Works in Safe Mode too, where the service");
             Console.WriteLine("                             does not run. Needs an administrator command prompt.");
@@ -162,6 +167,70 @@ namespace Lotus.Guard
         /// The way out for someone who locked themselves out: LOTUS is disarmed
         /// and everything it switched off is switched back on.
         /// </summary>
+        /// <summary>
+        /// Puts every connected USB device on the trusted list. The service owns
+        /// the policy, so it is asked for it and given the longer list back.
+        /// </summary>
+        private static int TrustConnected(bool dev)
+        {
+            GuardClient client = dev
+                ? new GuardClient(GuardProtocol.DevPipeName, false)
+                : new GuardClient();
+            GuardReply state = null;
+            // Right after installation the service may need a moment before it answers.
+            for (int attempt = 0; attempt < 40 && state == null; attempt++)
+            {
+                try
+                {
+                    state = client.Read();
+                }
+                catch (GuardUnavailableException)
+                {
+                    Thread.Sleep(500);
+                }
+            }
+            if (state == null)
+            {
+                Console.WriteLine("LOTUS Guard is not answering.");
+                return 1;
+            }
+            if (!state.Ok)
+            {
+                Console.WriteLine(state.Lockdown
+                    ? "LOTUS is locked down. Run LOTUS-Setup again to reset it."
+                    : "LOTUS Guard refused. " + state.Message);
+                return 1;
+            }
+
+            Policy policy;
+            try
+            {
+                policy = state.ReadPolicy() ?? new Policy();
+            }
+            catch (FormatException ex)
+            {
+                Console.WriteLine("The policy could not be read. " + ex.Message);
+                return 1;
+            }
+            List<TrustEntry> added = policy.TrustAll(DeviceScanner.Scan());
+            if (added.Count == 0)
+            {
+                Console.WriteLine("Every connected USB device is on the trusted list already.");
+                return 0;
+            }
+            GuardReply applied = client.Apply(policy.ToJson());
+            if (!applied.Ok)
+            {
+                Console.WriteLine("LOTUS Guard refused. " + applied.Message);
+                return 1;
+            }
+            foreach (TrustEntry entry in added) Console.WriteLine("Trusted: " + entry.Name);
+            Console.WriteLine(added.Count == 1
+                ? "One connected device was put on the trusted list."
+                : added.Count + " connected devices were put on the trusted list.");
+            return 0;
+        }
+
         private static int ReleaseAll()
         {
             // With the service running, ask it. It owns the policy and the devices.

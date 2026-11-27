@@ -19,3 +19,6 @@ TestResults/
 Thumbs.db
 Desktop.ini
 __pycache__/
+
+# Scripts that draw the artwork. They stay on the author's computer.
+tools/

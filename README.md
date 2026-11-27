@@ -28,8 +28,6 @@ Most of this page describes the Windows version. [Linux](#linux) has a section o
   <img src="docs/images/demo.gif" width="100%" alt="A walkthrough of the LOTUS app in seven steps: it starts disarmed, you choose the rules and turn the master switch on, Apply lists what would be switched off, the status changes to armed, the device list shows three blocked devices, the trusted list shows one device, and the activity log lists each block.">
 </p>
 
-<p align="center"><sub>The app itself, recorded in demo mode with simulated devices.</sub></p>
-
 <img src="docs/assets/divider.svg" width="100%" alt="">
 
 ## What you can set
@@ -38,14 +36,16 @@ Most of this page describes the Windows version. [Linux](#linux) has a section o
 | --- | --- | --- |
 | Removable storage | Allow, Read-only, Block | USB drives, external disks, card readers, phones and cameras |
 | PnP devices | Allow, Trusted only | Keyboards, mice, headsets, network and Bluetooth adapters, printers, hubs and anything else on USB |
-| Trusted list | One device or a whole model | Devices on the list are never blocked |
+| Trusted list | One device, a whole model or a whole vendor | Devices on the list are never blocked |
 
-A device you trust as "this device" is matched by its serial number. A device you trust as "whole model" is matched by vendor and product ID, so every unit of that model works.
+A device you trust as "this device" is matched by its serial number. A device you trust as "whole model" is matched by vendor and product ID, so every unit of that model works. A "whole vendor" entry is matched by the vendor ID alone and covers everything that vendor makes.
+
+A new installation starts like this: disarmed, removable storage on Allow, PnP devices on Allow, "Keep keyboards and mice working" ticked, "Refuse new devices before they start" not ticked, and an empty trusted list.
 
 - Setup blocks nothing. LOTUS stays disarmed until you choose a policy and switch it on.
 - Before a policy is applied, LOTUS lists the connected devices it would switch off.
 - A blocked device stays off after it is replugged, after a restart, and while the service is stopped.
-- A blocked device this PC has never seen does not start at all: Windows itself refuses to install it.
+- With "Refuse new devices before they start" ticked, a blocked device this PC has never seen does not start at all: Windows itself refuses to install it.
 - The policy and the trusted list sit in an encrypted store that only the LOTUS service can open. Someone who finds the files cannot read them, and a changed file is put back.
 - An activity log records every block and release, and a small notifier next to the clock tells whoever is at the PC why the thing they just plugged in does nothing.
 
@@ -55,7 +55,8 @@ A device you trust as "this device" is matched by its serial number. A device yo
 
 1. Download `LOTUS-Setup.exe` from the [releases page](https://github.com/MAXIVA11/LOTUS/releases), or build it yourself (see [Build from source](#build-from-source)).
 2. Run it and accept the Windows administrator prompt.
-3. Press <kbd>Install</kbd>, then <kbd>Open LOTUS</kbd>.
+3. Tick "Trust the USB devices that are connected right now" if you want your own devices on the trusted list from the start. It is not ticked unless you tick it.
+4. Press <kbd>Install</kbd>, then <kbd>Open LOTUS</kbd>.
 
 > [!NOTE]
 > Nothing is blocked after installation. LOTUS stays disarmed until you choose a policy and switch it on.
@@ -88,7 +89,7 @@ sudo lotus arm
 
 It needs a 64-bit Intel or AMD computer and a Linux that uses systemd. The program is one file that carries its own runtime.
 
-To block a device, LOTUS uses the switch the kernel has for every USB device, the `authorized` file. A device that is switched off there has no driver and none of its functions. With "hold new devices back" on, which is the default, the kernel does not switch on anything that is plugged in until LOTUS has looked at it, so a device the policy blocks never runs.
+To block a device, LOTUS uses the switch the kernel has for every USB device, the `authorized` file. A device that is switched off there has no driver and none of its functions. With strict mode switched on (`lotus strict on`), the kernel does not switch on anything that is plugged in until LOTUS has looked at it, so a device the policy blocks never runs.
 
 > [!NOTE]
 > The Linux version is tested on Ubuntu 24.04 in a virtual machine, with USB devices that QEMU emulates. The kernel in that test is real and the devices are not. It has not been run against physical USB hardware.
@@ -111,6 +112,16 @@ Before anything changes, LOTUS shows which connected devices the new policy woul
 </p>
 
 To let a blocked device in later, plug it in, open the Devices page and press <kbd>Trust device</kbd> or <kbd>Trust model</kbd>. It starts working within a second or two.
+
+A device that is not plugged in can be trusted by hand on the Trusted page. Choose what you have and type it in:
+
+| Kind | What to type | What it covers |
+| --- | --- | --- |
+| Vendor | The vendor ID, for example `046D` | Every device that vendor makes |
+| Model | Vendor and product ID, for example `046D:C52B` | Every unit of that model |
+| Device | The instance path, for example `USB\VID_0781&PID_5567\4C530001230505116353` | That one device |
+
+Device Manager shows these under Details, as "Hardware Ids" and "Device instance path". An entry made by hand covers the device whatever it does, because LOTUS has not seen it. A whole vendor is a wide door: it also lets in devices you have never seen.
 
 <p align="center">
   <img src="docs/images/devices.png" width="100%" alt="The device list, with three blocked devices at the top">
@@ -141,7 +152,7 @@ Check 05 has two exceptions. A device that Windows reports as built into the com
 
 The disabled state belongs to that device, and Windows remembers it. A blocked drive stays off when it is unplugged and plugged back in, after a restart, and while the service is stopped. Devices this PC has seen before, and that the policy blocks, are marked as disabled while they are unplugged, so they are already off when they come back.
 
-A device this PC has never seen has no record to mark. For those, LOTUS uses the device installation restrictions that are part of Windows: while LOTUS is armed, Windows refuses to install any USB device the policy blocks, so such a device never starts. This is the "Refuse new devices before they start" switch, which is on by default. A new device the policy allows, such as a new keyboard, is let through by LOTUS and works a fraction of a second later.
+A device this PC has never seen has no record to mark. For those, LOTUS uses the device installation restrictions that are part of Windows: while LOTUS is armed, Windows refuses to install any USB device the policy blocks, so such a device never starts. This is the "Refuse new devices before they start" switch. It is off after installation, and you tick it on the Control page. A new device the policy allows, such as a new keyboard, is let through by LOTUS and works a fraction of a second later.
 
 Sometimes Windows refuses to stop a device because a program has it open, typically Explorer reading a drive that was just plugged in. LOTUS then takes the device off the bus by resetting its USB port, which no program can refuse.
 
@@ -157,7 +168,8 @@ The full description is in [docs/how-it-works.md](docs/how-it-works.md).
 
 - Trust is based on what a device reports about itself. A device built to copy the vendor, product, serial number and functions of a trusted device is treated as that device.
 - With "Keep keyboards and mice working" on, any device that is only a keyboard or mouse works, including one that types on its own.
-- With "Refuse new devices before they start" off, or on a Windows older than Windows 10 21H2, a blocked device this PC has never seen runs for a few milliseconds before LOTUS has it switched off.
+- With "Refuse new devices before they start" off, which is how LOTUS starts, or on a Windows older than Windows 10 21H2, a blocked device this PC has never seen runs for a few milliseconds before LOTUS has it switched off.
+- A trust entry for a whole vendor, or one typed in by hand, is not tied to what the device does. Any device that reports that vendor, model or path is let in.
 - Windows reads the descriptors of every device that is plugged in, blocked or not. A device built to attack the Windows USB drivers through its descriptors is not stopped by LOTUS.
 - If the PC already has device installation restrictions from an administrator or from Group Policy, LOTUS leaves them alone and does not add its own.
 - LOTUS has no password. Anyone who can run the app as an administrator can change the policy, and an administrator who is determined to remove LOTUS, for example from Safe Mode, can do so.
@@ -224,7 +236,6 @@ The Linux version is built on Linux with `./build-linux.sh`, which writes `dist/
 | `tests/Lotus.Probe` | A small developer tool that runs single device calls, used by the hardware scripts |
 | `tests/hardware` | Scripts that test device control and a full install on real Windows hardware |
 | `tests/linux` | A script that tests a full install on a real Linux kernel in a virtual machine |
-| `tools` | Scripts that draw the icon, the artwork on this page and the walkthrough animation |
 
 ## Tests
 
@@ -234,9 +245,9 @@ The scripts in `tests\hardware` need an administrator prompt and real devices. `
 
 `dotnet test tests/Lotus.Linux.Tests` runs the shared tests against the Linux build, together with tests for the Linux parts on a made-up device tree. `tests/linux/vm-test.sh` boots Ubuntu under QEMU, installs LOTUS and plugs emulated USB devices in and out. [docs/linux.md](docs/linux.md#how-it-is-tested) lists what it checks.
 
-## About the look
+## Disclaimer
 
-The interface borrows from the hacker style of Watch Dogs 2: neon on black, hazard stripes and glitching type. The artwork on this page is drawn by `tools/make-readme-art.py` as plain SVG, and the walkthrough is assembled by `tools/make-demo.py` from pictures the app renders of itself. LOTUS is an independent project and is not affiliated with Ubisoft.
+LOTUS is provided as it is, without warranty of any kind. It switches devices off, and a policy that is set wrongly can leave you without a working keyboard, mouse or disk. The authors are not responsible for damage, lost data, lost access or any other harm that comes from installing or using it. Try a policy on a computer you can afford to lose access to before you rely on it, and read [If you lock yourself out](#if-you-lock-yourself-out) first.
 
 ## License
 

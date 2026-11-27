@@ -411,6 +411,44 @@
     </Style>
 
     <!-- ============ panels ============ -->
+    <!-- A text field: dark, monospaced, with a cyan edge while it has the caret. -->
+    <Style x:Key="Field" TargetType="TextBox">
+        <Setter Property="Background" Value="{StaticResource B.Ink}" />
+        <Setter Property="Foreground" Value="{StaticResource B.Text}" />
+        <Setter Property="CaretBrush" Value="{StaticResource B.Cyan}" />
+        <Setter Property="SelectionBrush" Value="{StaticResource B.Cyan}" />
+        <Setter Property="BorderBrush" Value="{StaticResource B.Line}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="FontFamily" Value="{StaticResource F.Mono}" />
+        <Setter Property="FontSize" Value="13.5" />
+        <Setter Property="Padding" Value="10,0,10,0" />
+        <Setter Property="MinHeight" Value="34" />
+        <Setter Property="MaxLength" Value="200" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Border x:Name="frame" Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}" SnapsToDevicePixels="True">
+                        <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                                      VerticalAlignment="Center" Focusable="False"
+                                      HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="frame" Property="BorderBrush" Value="{StaticResource B.Dim}" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="frame" Property="BorderBrush" Value="{StaticResource B.Cyan}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <Style x:Key="Card" TargetType="Border">
         <Setter Property="Background" Value="{StaticResource B.Panel}" />
         <Setter Property="BorderBrush" Value="{StaticResource B.Line}" />

@@ -33,8 +33,13 @@ Windows gives every device an instance ID such as `USB\VID_0781&PID_5567\4C53000
 
 - "This device" stores the full instance ID. It follows a device with a serial number to any port. For a device without one, it only holds in the port where you trusted it.
 - "Whole model" stores `VID_xxxx&PID_xxxx` and covers every unit of that model in any port.
+- "Whole vendor" stores `VID_xxxx` and covers every device that reports that vendor.
+
+The first two are made from a device that is plugged in, on the Devices page. All three can also be typed in on the Trusted page, for a device that is not there: a vendor ID, a vendor and product ID, or an instance path.
 
 A trust entry also records which USB functions the device had when you trusted it. If the device later shows up with a function that is not on that list, the entry no longer covers it and the policy applies as if it were not trusted. A trusted headset that suddenly presents a keyboard or a disk is blocked. Showing fewer functions than before is fine.
+
+An entry that was typed in has no such record, and neither has an entry for a whole vendor: LOTUS has not seen the device. It covers the device whatever it does.
 
 ## Working out what a device does
 
@@ -82,7 +87,7 @@ Devices this PC has seen before, and that the policy blocks on sight, get the sa
 
 A device Windows has never seen has no record to mark. What happens to it depends on strict mode.
 
-With strict mode on, which is the default, Windows itself refuses to install the device. LOTUS has told Windows to refuse every USB class the policy blocks, through the device installation restrictions that are part of Windows. Windows checks them before it loads any driver, logs "configuration blocked by policy", and the device never starts. In the hardware test neither the device nor any of its functions was started.
+With strict mode on, Windows itself refuses to install the device. Strict mode is the "Refuse new devices before they start" box, which is not ticked after installation. LOTUS has told Windows to refuse every USB class the policy blocks, through the device installation restrictions that are part of Windows. Windows checks them before it loads any driver, logs "configuration blocked by policy", and the device never starts. In the hardware test neither the device nor any of its functions was started.
 
 A new device the policy allows is refused in the same way at first, because Windows only knows the deny list and a list of exceptions. LOTUS reads the device's descriptors, sees that the policy allows it and adds it to the exceptions at once. Windows is still busy with the device at that moment, and its next step installs it. On the test PC a device with one function was running 60 milliseconds after Windows had refused it, and a device with two functions, each of which Windows refuses and LOTUS lets in separately, 170 milliseconds after.
 
@@ -137,7 +142,13 @@ LotusGuard --release-all   Disarm LOTUS, switch every blocked device back on, li
 LOTUS --demo               Open the app with simulated devices.
 LOTUS --tray               Run the notifier.
 
+LotusGuard --trust-connected
+                           Put every USB device that is connected right now on the trusted list.
+
 LOTUS-Setup /quiet                 Install or update without a window.
+LOTUS-Setup /quiet /trust-connected
+                                   The same, and on a new installation put the connected
+                                   devices on the trusted list.
 LOTUS-Setup /uninstall /quiet      Remove without a window.
 ```
 

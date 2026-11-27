@@ -197,6 +197,9 @@ check_not "and learns nothing from the attempt" "lotus status 2>/dev/null | grep
 check "the daemon runs without any capability" "grep -q 'CapEff:[[:space:]]*0000000000000000' /proc/\$(pidof lotus)/status"
 check "the daemon listens to the kernel's device announcements" "sudo ss -H -f netlink 2>/dev/null | grep -i uevent | grep -q \"\$(pidof lotus)\""
 check "the log says the daemon started" "sudo lotus log 50 | grep -q 'started'"
+check "a new installation allows storage and every device" "sudo lotus status | grep -Eq 'STORAGE +ALLOW' && sudo lotus status | grep -Eq 'USB DEVICES +ALLOW'"
+check "it keeps keyboards and mice working, has strict mode off and trusts nothing" "sudo lotus status | grep -q 'ALWAYS WORK' && sudo lotus status | grep -q 'SWITCHED OFF AFTER THEY START' && sudo lotus status | grep -Eq 'TRUSTED +0'"
+check "the trusted list is empty" "sudo lotus trusted | grep -q 'Nothing is trusted yet'"
 
 # ---------------------------------------------------------------- disarmed
 
@@ -220,7 +223,8 @@ check "the stick is switched off" "t wait-auth $STICK1 0"
 check "its disk is gone" "t wait-no-block $STICK1"
 check "the kernel took its configuration away" "t not-configured $STICK1"
 check "the keyboard keeps working" "t auth $KBD | grep -qx 1 && t configured $KBD"
-check "every controller now holds new devices back" "[ \"\$(t defaults)\" = '0 ' ]"
+check "strict mode is off until it is chosen, so the controllers are still open" "[ \"\$(t defaults)\" = '1 ' ]"
+check "switching strict mode on shuts every controller" "sudo lotus strict on && sleep 1 && [ \"\$(t defaults)\" = '0 ' ] && sudo lotus status | grep -q 'REFUSED BEFORE THEY START'"
 check "LOTUS shows the stick as blocked and says why" "sudo lotus devices | grep -q 'BLOCKED.*Storage' && sudo lotus devices | grep -q 'removable storage is blocked'"
 check "the log has the block" "sudo lotus log 50 | grep -q 'BLOCKED.*QEMU USB HARDDRIVE was blocked'"
 
@@ -269,6 +273,24 @@ plug s1 usb-storage 6 drive=disk1 serial=$STICK1
 check "in another port it is still the trusted stick" "t wait-auth $STICK1 1 5 && t wait-block $STICK1"
 check "trusting the whole model lets the second stick in" "sudo lotus trust \"\$(t id $STICK2)\" --model && t wait-auth $STICK2 1 && t wait-block $STICK2"
 check "untrusting the model switches it off again and leaves the first on" "sudo lotus untrust 'VID_46F4&PID_0001' --yes && t wait-auth $STICK2 0 && t auth $STICK1 | grep -qx 1"
+
+# ---------------------------------------------------------------- trust by hand
+
+section "Trust entries added by hand"
+check "a vendor that is typed in lets the serial adapter work" "sudo lotus trust vendor 0403 && t wait-auth $SERIAL 1 && t configured $SERIAL"
+check "the list shows the entry as a whole vendor" "sudo lotus trusted | grep -A1 'WHOLE VENDOR' | grep -q VID_0403"
+check "LOTUS says why the adapter is allowed" "sudo lotus devices | grep -B1 $SERIAL | grep -q TRUSTED"
+check "taking the vendor off the list asks first" "! sudo lotus untrust 0403 </dev/null && t auth $SERIAL | grep -qx 1"
+check "with --yes the adapter is switched off again" "sudo lotus untrust 0403 --yes && t wait-auth $SERIAL 0"
+check "a model that is typed in, with a name, lets the second stick work" "sudo lotus trust model 46f4:0001 --name 'Test sticks' && t wait-auth $STICK2 1 && t wait-block $STICK2"
+check "the list shows the name that was given" "sudo lotus trusted | grep -q 'WHOLE MODEL *Test sticks'"
+check "untrusting the model switches the second stick off and leaves the first, which is trusted itself" "sudo lotus untrust 46f4:0001 --yes && t wait-auth $STICK2 0 && t auth $STICK1 | grep -qx 1"
+check "an instance path that is typed in trusts that one stick" "sudo lotus trust id \"\$(t id $STICK2 | tr A-Z a-z)\" && t wait-auth $STICK2 1"
+check "and untrusting it switches the stick off" "sudo lotus untrust \"\$(t id $STICK2)\" --yes && t wait-auth $STICK2 0"
+check "a device that is not plugged in can be trusted in advance" "sudo lotus trust id 'USB\\VID_1234&PID_5678\\NOTHERE' && sudo lotus trusted | grep -q NOTHERE && sudo lotus untrust 'USB\\VID_1234&PID_5678\\NOTHERE'"
+check_not "something that is not a vendor ID is refused" "sudo lotus trust vendor printer"
+check_not "half a model is refused" "sudo lotus trust model 46f4"
+check_not "the path of one function of a device is refused" "sudo lotus trust id 'USB\\VID_1234&PID_5678&MI_00\\X'"
 
 # ---------------------------------------------------------------- other kinds
 
@@ -428,7 +450,7 @@ check "nothing of LOTUS is left" "! test -e /usr/local/bin/lotus && ! test -e /u
 check "systemd no longer knows the service" "! systemctl cat lotus >/dev/null 2>&1 && ! pidof lotus"
 
 section "Removing when the daemon cannot help"
-g "cd release && sudo ./install.sh >/dev/null 2>&1; sudo lotus storage readonly >/dev/null; sudo lotus usb trusted --yes >/dev/null; sudo lotus arm --yes >/dev/null"
+g "cd release && sudo ./install.sh >/dev/null 2>&1; sudo lotus strict on >/dev/null; sudo lotus storage readonly >/dev/null; sudo lotus usb trusted --yes >/dev/null; sudo lotus arm --yes >/dev/null"
 check "installed again and armed: the adapter is off and the sticks are read-only" "t wait-auth $SERIAL 0 && t wait-ro $STICK1 1 && t wait-ro $STICK2 1 && [ \"\$(t defaults)\" = '0 ' ]"
 g "sudo systemctl stop lotus; sudo cp /usr/local/sbin/lotus-uninstall /root/u.sh; sudo rm /usr/local/bin/lotus"
 broken_output=$(g "sudo sh /root/u.sh" 2>&1)
@@ -468,12 +490,16 @@ if wait_for_ssh 300; then
     g "cloud-init status --wait >/dev/null 2>&1"
     copy_in
     check "its root filesystem is on the USB disk" "b=\$(t block $ROOT) && findmnt -n -o SOURCE / | grep -q \"^/dev/\$b\""
-    g "cd release && sudo ./install.sh" 2>&1 | sed 's/^/    /'
+    check_not "the installer refuses an option it does not know" "cd release && sudo ./install.sh --everything"
+    check "and has installed nothing" "! test -e /usr/local/bin/lotus"
+    g "cd release && sudo ./install.sh --trust-connected" 2>&1 | sed 's/^/    /'
+    check "asked to, the installer put the connected devices on the trusted list" "sudo lotus trusted | grep -q $ROOT"
+    check "and left everything else as on a new installation" "sudo lotus status | grep -q DISARMED && sudo lotus status | grep -Eq 'STORAGE +ALLOW' && sudo lotus status | grep -Eq 'USB DEVICES +ALLOW'"
     check "LOTUS says the system runs from that disk" "sudo lotus devices | grep -A1 'QEMU USB HARDDRIVE' | grep -q 'the system runs from it'"
     plug s1 usb-storage 2 drive=disk1 serial=$STICK1
     check "a stick is plugged in next to it" "t present $STICK1 && t wait-block $STICK1"
 
-    lost=$(g "sudo lotus storage block --yes >/dev/null; sudo lotus usb trusted --yes >/dev/null; sudo lotus arm --yes" 2>&1)
+    lost=$(g "sudo lotus strict on >/dev/null; sudo lotus storage block --yes >/dev/null; sudo lotus usb trusted --yes >/dev/null; sudo lotus arm --yes" 2>&1)
     printf '%s\n' "$lost" | sed 's/^/    /'
     if [ "$(printf '%s\n' "$lost" | grep -c 'QEMU USB HARDDRIVE')" = 1 ]; then
         ok "arming with everything blocked lists one disk to switch off, the stick"
@@ -481,6 +507,7 @@ if wait_for_ssh 300; then
         bad "arming with everything blocked lists one disk to switch off, the stick" "$lost"
     fi
     check "the stick is switched off" "t wait-auth $STICK1 0"
+    check "the stick was not connected when LOTUS was installed, so it is not on the trusted list" "! sudo lotus trusted | grep -q $STICK1"
     check "the system's disk stays on and the system keeps running" "sleep 3; t auth $ROOT | grep -qx 1 && sudo touch /var/tmp/written-while-armed"
     check "LOTUS explains why it leaves that disk alone" "sudo lotus devices | grep -A1 'QEMU USB HARDDRIVE' | grep -q 'the system runs from it'"
 

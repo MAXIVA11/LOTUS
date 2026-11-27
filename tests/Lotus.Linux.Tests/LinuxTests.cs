@@ -1006,14 +1006,15 @@ namespace Lotus.Linux.Tests
             return new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile).ReadRecent(1000);
         }
 
+        // Strict mode is off in a new policy. These tests are about a policy that has it on.
         private static Policy StorageBlocked()
         {
-            return new Policy { Armed = true, Storage = StorageMode.Block };
+            return new Policy { Armed = true, Storage = StorageMode.Block, Strict = true };
         }
 
         private static Policy TrustedOnly()
         {
-            return new Policy { Armed = true, Storage = StorageMode.Block, Pnp = PnpMode.Block };
+            return new Policy { Armed = true, Storage = StorageMode.Block, Pnp = PnpMode.Block, Strict = true };
         }
 
         [Fact]
@@ -1213,7 +1214,7 @@ namespace Lotus.Linux.Tests
             UnixControlClient client = Start();
             var stopped = new ManualResetEventSlim(false);
             worker.StopRequested += purpose => stopped.Set();
-            Apply(client, new Policy { Armed = true, Storage = StorageMode.ReadOnly, Pnp = PnpMode.Block });
+            Apply(client, new Policy { Armed = true, Storage = StorageMode.ReadOnly, Pnp = PnpMode.Block, Strict = true });
             sys.PlugPrinter("2-2");
             Assert.True(Wait.Until(() => sys.Default("usb2") == "0" && File.Exists(RulePath)));
             Assert.True(Wait.Until(() => client.Read().ReadLedger().Count == 1));

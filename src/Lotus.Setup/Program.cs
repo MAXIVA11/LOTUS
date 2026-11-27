@@ -51,7 +51,7 @@ namespace Lotus.Setup
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         private static int Run(string[] args)
         {
-            bool quiet = false, uninstall = false;
+            bool quiet = false, uninstall = false, trustConnected = false;
             for (int i = 0; i + 1 < args.Length; i++)
             {
                 // Developer option: draw the setup screens into PNG files and exit.
@@ -92,6 +92,9 @@ namespace Lotus.Setup
                     case "uninstall":
                         uninstall = true;
                         break;
+                    case "trust-connected":
+                        trustConnected = true;
+                        break;
                 }
             }
 
@@ -105,7 +108,7 @@ namespace Lotus.Setup
             int code = 1;
             try
             {
-                code = quiet ? RunQuiet(uninstall) : RunWindow(uninstall);
+                code = quiet ? RunQuiet(uninstall, trustConnected) : RunWindow(uninstall);
                 return code;
             }
             finally
@@ -117,9 +120,9 @@ namespace Lotus.Setup
             }
         }
 
-        private static int RunQuiet(bool uninstall)
+        private static int RunQuiet(bool uninstall, bool trustConnected)
         {
-            var installer = new Installer(WriteLog);
+            var installer = new Installer(WriteLog) { TrustConnected = trustConnected };
             try
             {
                 WriteLog(uninstall ? "=== quiet uninstall ===" : "=== quiet install ===");

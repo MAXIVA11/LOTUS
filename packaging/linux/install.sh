@@ -7,6 +7,18 @@ fail() { printf '  XX  %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || fail "Run this as root: sudo ./install.sh"
 here=$(cd "$(dirname "$0")" && pwd)
+
+# On a new installation the installer asks whether the USB devices that are
+# connected right now should go on the trusted list. --trust-connected answers
+# yes in advance, --no-trust answers no. Without a terminal nobody is asked.
+trust=ask
+for option in "$@"; do
+    case "$option" in
+        --trust-connected) trust=yes ;;
+        --no-trust) trust=no ;;
+        *) fail "Unknown option $option. The options are --trust-connected and --no-trust." ;;
+    esac
+done
 for file in lotus lotus.service uninstall.sh; do
     [ -f "$here/$file" ] || fail "$file is missing next to install.sh. Unpack the whole archive first."
 done
@@ -66,8 +78,20 @@ elif [ "$updating" = yes ]; then
     say "LOTUS $(/usr/local/bin/lotus version | sed 's/^LOTUS //') is installed. Your policy is unchanged."
 else
     say "LOTUS $(/usr/local/bin/lotus version | sed 's/^LOTUS //') is installed. It is disarmed, so nothing is blocked yet."
+    if [ "$trust" = ask ] && [ -t 0 ]; then
+        printf '  Trust the USB devices that are connected right now? [y/N] '
+        read -r answer || answer=
+        case "$answer" in
+            y|Y|yes|Yes|YES) trust=yes ;;
+        esac
+    fi
+    if [ "$trust" = yes ]; then
+        /usr/local/bin/lotus trust connected \
+            || say "The connected devices could not be put on the trusted list. Do it later with: sudo lotus trust connected"
+    fi
     say "See what is connected:   sudo lotus devices"
     say "Choose the rules:        sudo lotus storage block"
     say "Then start enforcing:    sudo lotus arm"
 fi
 say "Remove it again with:    sudo lotus-uninstall"
+say "LOTUS comes as it is, without warranty. You use it at your own risk."

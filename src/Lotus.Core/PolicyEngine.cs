@@ -171,6 +171,10 @@ namespace Lotus.Core
                 case Reason.SystemDisk:
                     return SystemWords.SystemDisk;
                 case Reason.Trusted:
+                    if (decision.Trust != null && decision.Trust.Kind == TrustKind.Vendor)
+                    {
+                        return "Trusted. Every device from this vendor is allowed.";
+                    }
                     return decision.Trust != null && decision.Trust.Kind == TrustKind.Model
                         ? "Trusted. Every device of this model is allowed."
                         : "Trusted. This exact device is allowed.";

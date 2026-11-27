@@ -75,6 +75,8 @@ namespace Lotus.Setup
                 : "Nothing is blocked after installation. LOTUS stays disarmed until you pick a policy and switch it on.";
             WelcomePath.Text = "Installs to " + Installer.InstallDir;
             PrimaryButton.Content = update ? "UPDATE" : "INSTALL";
+            // An update keeps the trusted list it finds, so the question is only asked the first time.
+            TrustPanel.Visibility = update ? Visibility.Collapsed : Visibility.Visible;
             if (!Installer.HasPayload)
             {
                 WelcomeNote.Text = "This copy of LOTUS-Setup was built without the program files. Build it with build.ps1.";
@@ -131,7 +133,11 @@ namespace Lotus.Setup
             SecondaryButton.Visibility = Visibility.Collapsed;
             CloseButton.IsEnabled = false;
 
-            var installer = new Installer(Log);
+            var installer = new Installer(Log)
+            {
+                TrustConnected = !uninstall && TrustPanel.Visibility == Visibility.Visible &&
+                                 TrustConnected.IsChecked == true
+            };
             string failure = await RunInBackground(() =>
             {
                 fileLog(uninstall ? "=== uninstall ===" : "=== install ===");
@@ -238,8 +244,13 @@ namespace Lotus.Setup
             Lotus.Ui.GlitchText.AnimationsEnabled = false;
             Directory.CreateDirectory(directory);
 
+            // The pictures show a new installation, also when LOTUS is installed here.
+            string realFolder = Installer.InstallDir;
+            Installer.OverrideInstallDir(Path.Combine(Path.GetTempPath(), "lotus-shots-" + Guid.NewGuid().ToString("N")));
             var install = new SetupWindow(false, null) { ShowActivated = false };
+            Installer.OverrideInstallDir(null);
             install.WelcomeTitle.Text = "INSTALL";
+            install.WelcomePath.Text = "Installs to " + realFolder;
             install.Show();
             install.Capture(Path.Combine(directory, "setup-1-welcome.png"));
 

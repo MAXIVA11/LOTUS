@@ -75,7 +75,7 @@ namespace Lotus.Setup
         /// <summary>Points setup at another folder. Only the developer self-test uses this.</summary>
         internal static void OverrideInstallDir(string folder)
         {
-            installDirOverride = Path.GetFullPath(folder);
+            installDirOverride = folder == null ? null : Path.GetFullPath(folder);
         }
 
         public static string DataDir =>
@@ -133,6 +133,13 @@ namespace Lotus.Setup
 
         // ================= install =================
 
+        /// <summary>
+        /// The person installing asked for the USB devices that are connected
+        /// right now to go on the trusted list. Only on a new installation: an
+        /// update keeps the list it finds.
+        /// </summary>
+        public bool TrustConnected;
+
         public void Install()
         {
             if (!HasPayload)
@@ -167,6 +174,7 @@ namespace Lotus.Setup
             RegisterUninstaller();
             RemoveLeftoversOfEarlierVersions();
             StartService();
+            if (TrustConnected && !update) TrustConnectedDevices();
             StartNotifier();
 
             log("Done. LOTUS is installed and disarmed. Nothing is blocked until you switch it on.");
@@ -966,6 +974,54 @@ namespace Lotus.Setup
                         process.Dispose();
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// The service owns the policy and knows the devices, so the program that
+        /// was just installed does this. What it prints goes into the setup log.
+        /// </summary>
+        private void TrustConnectedDevices()
+        {
+            log("Putting the connected USB devices on the trusted list");
+            int code = -1;
+            try
+            {
+                var start = new ProcessStartInfo(Path.Combine(InstallDir, GuardExe), "--trust-connected")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true
+                };
+                using (Process process = Process.Start(start))
+                {
+                    System.Threading.Tasks.Task<string> output = process.StandardOutput.ReadToEndAsync();
+                    if (process.WaitForExit(90000))
+                    {
+                        code = process.ExitCode;
+                        if (output.Wait(5000))
+                        {
+                            foreach (string line in output.Result.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                            {
+                                log(line.Trim());
+                            }
+                        }
+                    }
+                    else
+                    {
+                        try { process.Kill(); } catch (Exception) { }
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception || ex is InvalidOperationException ||
+                                       ex is IOException)
+            {
+                log(ex.Message);
+            }
+            if (code != 0)
+            {
+                Warn("The connected devices could not be put on the trusted list. Open LOTUS and trust them on the Devices page.");
             }
         }
 

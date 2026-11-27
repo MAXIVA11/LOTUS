@@ -28,13 +28,18 @@ namespace Lotus.Core
         /// <summary>One physical device, matched by its instance ID.</summary>
         Device,
         /// <summary>Every device with the same vendor and product ID.</summary>
-        Model
+        Model,
+        /// <summary>Every device of one vendor, whatever the product.</summary>
+        Vendor
     }
 
     public sealed class TrustEntry
     {
         public TrustKind Kind;
-        /// <summary>An instance ID for Device entries, or VID_xxxx&amp;PID_xxxx for Model entries. Upper case.</summary>
+        /// <summary>
+        /// An instance ID for Device entries, VID_xxxx&amp;PID_xxxx for Model entries and
+        /// VID_xxxx for Vendor entries. Upper case.
+        /// </summary>
         public string Id = "";
         public string Name = "";
         public DateTime AddedUtc = DateTime.UtcNow;
@@ -50,8 +55,149 @@ namespace Lotus.Core
         public bool Matches(UsbDevice device)
         {
             if (device == null) return false;
-            string target = Kind == TrustKind.Device ? device.InstanceId : device.ModelId;
+            string target = Kind == TrustKind.Device ? device.InstanceId
+                : Kind == TrustKind.Model ? device.ModelId
+                : "VID_" + device.Vid;
+            // A device that did not say who made it matches no vendor.
+            if (Kind == TrustKind.Vendor && string.IsNullOrEmpty(device.Vid)) return false;
             return string.Equals(Id, target, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>How the kind is written in a saved policy.</summary>
+        public static string KindToText(TrustKind kind)
+        {
+            switch (kind)
+            {
+                case TrustKind.Model: return "model";
+                case TrustKind.Vendor: return "vendor";
+                default: return "device";
+            }
+        }
+
+        /// <summary>
+        /// Makes a trust entry from what a person typed, for a device LOTUS may
+        /// never have seen. Such an entry records no functions, so it covers the
+        /// device whatever it turns out to do.
+        ///
+        /// A vendor is four hex digits, with or without "VID_" or "0x" in front.
+        /// A model is a vendor and a product: 046D:C52B, 046D C52B or
+        /// VID_046D&amp;PID_C52B. A device is its instance path, as Device Manager
+        /// or "lotus devices" shows it: USB\VID_0781&amp;PID_5567\4C530001230505116353.
+        /// </summary>
+        public static bool TryParse(TrustKind kind, string text, string name, out TrustEntry entry, out string error)
+        {
+            entry = null;
+            error = null;
+            string typed = (text ?? "").Trim().ToUpperInvariant();
+            if (typed.Length == 0)
+            {
+                error = "Nothing was entered.";
+                return false;
+            }
+            if (typed.Length > 200)
+            {
+                error = "That is too long to be a USB ID.";
+                return false;
+            }
+
+            string id;
+            string label;
+            switch (kind)
+            {
+                case TrustKind.Vendor:
+                {
+                    string vid = HexPart(typed, "VID");
+                    if (vid == null)
+                    {
+                        error = "A vendor ID is four characters from 0 to 9 and A to F, for example 046D.";
+                        return false;
+                    }
+                    id = "VID_" + vid;
+                    label = "Every device from vendor " + vid;
+                    break;
+                }
+                case TrustKind.Model:
+                {
+                    string rest = typed.StartsWith(@"USB\", StringComparison.Ordinal) ? typed.Substring(4) : typed;
+                    string[] parts = rest.Split(new[] { ':', '&', ' ', '/', ',', ';', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    string vid = parts.Length == 2 ? HexPart(parts[0], "VID") : null;
+                    string pid = parts.Length == 2 ? HexPart(parts[1], "PID") : null;
+                    if (vid == null || pid == null)
+                    {
+                        error = "A model is a vendor ID and a product ID, four characters each, for example 046D:C52B.";
+                        return false;
+                    }
+                    id = "VID_" + vid + "&PID_" + pid;
+                    label = "Every " + vid + ":" + pid;
+                    break;
+                }
+                default:
+                {
+                    string[] parts = typed.Split('\\');
+                    string[] model = parts.Length == 3 ? parts[1].Split('&') : new string[0];
+                    if (parts.Length == 3 && parts[0] == "USB" && model.Length > 2)
+                    {
+                        error = "That is the path of one function of a device. Use the path of the device itself, " +
+                                "the one without \"&MI_\" in it.";
+                        return false;
+                    }
+                    bool shaped = parts.Length == 3 && parts[0] == "USB" && model.Length == 2 &&
+                                  model[0].StartsWith("VID_", StringComparison.Ordinal) && IsHex4(model[0].Substring(4)) &&
+                                  model[1].StartsWith("PID_", StringComparison.Ordinal) && IsHex4(model[1].Substring(4)) &&
+                                  parts[2].Length > 0;
+                    if (shaped)
+                    {
+                        foreach (char c in parts[2])
+                        {
+                            if (c <= ' ' || c > '~') shaped = false;
+                        }
+                    }
+                    if (!shaped)
+                    {
+                        error = "An instance path looks like USB\\VID_0781&PID_5567\\4C530001230505116353: " +
+                                "USB, the vendor and product, and the serial number or port.";
+                        return false;
+                    }
+                    id = typed;
+                    label = typed;
+                    break;
+                }
+            }
+
+            string cleanName = TextSafety.Clean(name ?? "");
+            entry = new TrustEntry
+            {
+                Kind = kind,
+                Id = Policy.NormalizeId(id),
+                Name = cleanName.Length > 0 ? cleanName : label,
+                AddedUtc = DateTime.UtcNow
+            };
+            return true;
+        }
+
+        /// <summary>Four hex digits, with an optional "VID_", "VID:", "VID=" or "0x" in front. Null when it is not that.</summary>
+        private static string HexPart(string text, string prefix)
+        {
+            string value = text.Trim();
+            foreach (string lead in new[] { prefix + "_", prefix + ":", prefix + "=", prefix, "0X" })
+            {
+                if (value.StartsWith(lead, StringComparison.Ordinal))
+                {
+                    value = value.Substring(lead.Length);
+                    break;
+                }
+            }
+            return IsHex4(value) ? value : null;
+        }
+
+        private static bool IsHex4(string text)
+        {
+            if (text == null || text.Length != 4) return false;
+            foreach (char c in text)
+            {
+                if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) return false;
+            }
+            return true;
         }
 
         /// <summary>True when the device does nothing beyond what it did when it was trusted.</summary>
@@ -119,9 +265,9 @@ namespace Lotus.Core
         /// <summary>
         /// Has Windows refuse to install USB devices the policy blocks, so that a
         /// device this PC has never seen does not start at all. Devices the policy
-        /// allows are let through one by one.
+        /// allows are let through one by one. Off unless someone chooses it.
         /// </summary>
-        public bool Strict = true;
+        public bool Strict;
         public List<TrustEntry> Trusted = new List<TrustEntry>();
 
         public static string NormalizeId(string id)
@@ -167,6 +313,25 @@ namespace Lotus.Core
             }
             Trusted.Add(entry);
             return true;
+        }
+
+        /// <summary>
+        /// Puts every given device on the trusted list and returns the entries
+        /// that were new. A device without a serial number has a different
+        /// identity in every port, so its model is trusted instead.
+        /// </summary>
+        public List<TrustEntry> TrustAll(IEnumerable<UsbDevice> devices)
+        {
+            var added = new List<TrustEntry>();
+            if (devices == null) return added;
+            foreach (UsbDevice device in devices)
+            {
+                if (device == null || string.IsNullOrEmpty(device.InstanceId)) continue;
+                if (IsTrusted(device)) continue;
+                TrustEntry entry = device.HasSerial ? TrustEntry.ForDevice(device) : TrustEntry.ForModel(device);
+                if (Trusted.Count < MaxTrusted && AddTrust(entry)) added.Add(entry);
+            }
+            return added;
         }
 
         public bool RemoveTrust(TrustKind kind, string id)
@@ -216,7 +381,7 @@ namespace Lotus.Core
             {
                 trusted.Add(new Dictionary<string, object>
                 {
-                    ["kind"] = entry.Kind == TrustKind.Device ? "device" : "model",
+                    ["kind"] = TrustEntry.KindToText(entry.Kind),
                     ["id"] = entry.Id,
                     ["name"] = entry.Name ?? "",
                     ["added"] = Json.FormatTime(entry.AddedUtc),
@@ -255,8 +420,8 @@ namespace Lotus.Core
             policy.Version = CurrentVersion;
             policy.Armed = RequireBool(root, "armed", false);
             policy.AllowInput = RequireBool(root, "allowInput", true);
-            // A policy from before this setting existed gets it switched on.
-            policy.Strict = RequireBool(root, "strict", true);
+            // Off unless the policy says otherwise, like in a new policy.
+            policy.Strict = RequireBool(root, "strict", false);
 
             string storage = Json.GetString(root, "storage", "allow");
             switch (storage.ToLowerInvariant())
@@ -282,13 +447,13 @@ namespace Lotus.Core
                 string kind = Json.GetString(obj, "kind", "device").ToLowerInvariant();
                 string id = NormalizeId(Json.GetString(obj, "id", ""));
                 if (id.Length == 0) continue;
-                if (kind != "device" && kind != "model")
+                if (kind != "device" && kind != "model" && kind != "vendor")
                 {
                     throw new FormatException("Unknown trust kind \"" + kind + "\".");
                 }
                 var entry = new TrustEntry
                 {
-                    Kind = kind == "model" ? TrustKind.Model : TrustKind.Device,
+                    Kind = kind == "model" ? TrustKind.Model : kind == "vendor" ? TrustKind.Vendor : TrustKind.Device,
                     Id = id,
                     Name = TextSafety.Clean(Json.GetString(obj, "name", "")),
                     AddedUtc = Json.ParseTime(Json.GetString(obj, "added", null), DateTime.UtcNow)

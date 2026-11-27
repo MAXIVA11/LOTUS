@@ -5,7 +5,7 @@ namespace Lotus.Ui
 {
     /// <summary>
     /// The LOTUS mark: an angular lotus flower on a dark tile. The shapes match
-    /// tools\make-icon.ps1, which draws the same mark into the .ico file.
+    /// mark in the .ico file.
     /// </summary>
     public sealed class LotusMark : FrameworkElement
     {

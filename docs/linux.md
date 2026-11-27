@@ -24,6 +24,10 @@ sudo ./install.sh
 
 The installer copies the program to `/usr/local/bin/lotus`, adds the service `lotus.service` and starts it. Nothing is blocked afterwards. LOTUS stays disarmed until you choose a policy and arm it.
 
+On a new installation the installer asks whether the USB devices that are connected right now should go on the trusted list. The answer is no unless you say yes. `sudo ./install.sh --trust-connected` answers yes in advance and `--no-trust` answers no. Without a terminal nobody is asked.
+
+A new installation starts disarmed, with storage and every other device allowed, keyboards and mice kept working, strict mode off and an empty trusted list.
+
 Running `install.sh` from a newer release updates LOTUS and keeps your policy.
 
 ## Your first policy
@@ -64,16 +68,23 @@ A change that would switch off a device that works right now lists those devices
 | `lotus log [lines]` | The activity log |
 | `lotus storage allow\|readonly\|block` | USB drives, card readers, cameras and phones |
 | `lotus usb allow\|trusted` | Every other USB device: all of them, or only trusted ones |
-| `lotus input on\|off` | Keep keyboards and mice working under `trusted`. On by default |
-| `lotus strict on\|off` | Hold new devices back before they start. On by default |
+| `lotus input on\|off` | Keep keyboards and mice working under `trusted`. On after installation |
+| `lotus strict on\|off` | Hold new devices back before they start. Off after installation |
 | `lotus arm`, `lotus disarm` | Start and stop enforcing |
-| `lotus trust <number\|id>` | Trust one device |
+| `lotus trust <number\|id>` | Trust one device that is plugged in |
 | `lotus trust <number\|id> --model` | Trust every unit of that model |
-| `lotus untrust <number\|id\|model>` | Take a device or a model off the trusted list |
+| `lotus trust connected` | Trust every device that is plugged in right now |
+| `lotus trust vendor <vid>` | Trust every device of a vendor, for example `046D` |
+| `lotus trust model <vid:pid>` | Trust every unit of a model, for example `046D:C52B` |
+| `lotus trust id <instance path>` | Trust one device by its path, plugged in or not |
+| `lotus trusted` | The trusted list |
+| `lotus untrust <number\|id\|model\|vendor>` | Take an entry off the trusted list |
 | `lotus release-all` | Disarm and switch every blocked device back on |
 | `lotus version` | The version |
 
 Every command except `version` and `help` needs root, because only root may talk to the daemon.
+
+The three `trust` commands that take a typed value are for a device that need not be plugged in. Add `--name "..."` to give the entry a name. An entry made this way covers the device whatever it does, because LOTUS has not seen it, and a whole vendor also lets in devices you have never seen.
 
 ## How blocking works on Linux
 
@@ -144,7 +155,7 @@ These come on top of the [limits that apply everywhere](../README.md#limits).
 
 - Root can do anything LOTUS can do, and undo it. LOTUS on Linux protects a computer from the devices plugged into it and from users who are not root.
 - Stopping the daemon opens nothing: blocked devices stay off and the controllers stay shut. But a restart of the computer resets the kernel's switches. From power-on until the daemon starts, the kernel runs every device that is plugged in. The daemon then switches off what the policy blocks.
-- With strict mode off, a blocked device that is plugged in runs until the daemon has switched it off.
+- With strict mode off, which is how LOTUS starts, a blocked device that is plugged in runs until the daemon has switched it off.
 - If another program already holds the USB controllers shut, as USBGuard does, LOTUS does not touch them, and strict mode is off. It still switches blocked devices off after they start.
 - The kernel shows a device that is off in one way only, whoever switched it off. With strict mode on, LOTUS takes a device that is off and not on its ledger for one the kernel is holding back, and switches it on if the policy allows it. A device you switch off by hand through its `authorized` file does not stay off unless the policy blocks it.
 - Read-only mode covers disks. A phone or camera that speaks MTP or PTP has no disk for the kernel to protect, so read-only mode does not make it read-only. Set storage to `block` to keep such devices out.

@@ -16,6 +16,7 @@
     <!-- The tests of the shared parts run here too, against the copy that is built for Linux.
          The parts of them that need Windows are left out of this build. -->
     <Compile Include="..\Lotus.Tests\ClassifierAndEngineTests.cs" Link="Shared\ClassifierAndEngineTests.cs" />
+    <Compile Include="..\Lotus.Tests\CustomTrustTests.cs" Link="Shared\CustomTrustTests.cs" />
     <Compile Include="..\Lotus.Tests\Devices.cs" Link="Shared\Devices.cs" />
     <Compile Include="..\Lotus.Tests\EnforcerTests.cs" Link="Shared\EnforcerTests.cs" />
     <Compile Include="..\Lotus.Tests\JsonAndPolicyTests.cs" Link="Shared\JsonAndPolicyTests.cs" />
