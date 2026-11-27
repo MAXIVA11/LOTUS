@@ -89,7 +89,7 @@ LOTUS hears about new devices from the kernel itself, over a netlink socket. It 
 
 Read-only mode is a udev rule, `/etc/udev/rules.d/99-lotus-readonly.rules`. It marks every USB disk as read-only in the kernel the moment the disk appears, before the desktop can mount it. The kernel then refuses writes whatever a mount command asks for. When the mode changes, LOTUS switches connected disks off and on once so that they appear again under the new rule.
 
-LOTUS keeps a ledger of the devices it switched off and only ever switches those back on. A device that is off for another reason is left alone.
+LOTUS keeps a ledger of the devices it switched off. When the policy stops blocking one of them, that is the device it switches back on.
 
 ### The disk the system runs from
 
@@ -146,6 +146,7 @@ These come on top of the [limits that apply everywhere](../README.md#limits).
 - Stopping the daemon opens nothing: blocked devices stay off and the controllers stay shut. But a restart of the computer resets the kernel's switches. From power-on until the daemon starts, the kernel runs every device that is plugged in. The daemon then switches off what the policy blocks.
 - With strict mode off, a blocked device that is plugged in runs until the daemon has switched it off.
 - If another program already holds the USB controllers shut, as USBGuard does, LOTUS does not touch them, and strict mode is off. It still switches blocked devices off after they start.
+- The kernel shows a device that is off in one way only, whoever switched it off. With strict mode on, LOTUS takes a device that is off and not on its ledger for one the kernel is holding back, and switches it on if the policy allows it. A device you switch off by hand through its `authorized` file does not stay off unless the policy blocks it.
 - Read-only mode covers disks. A phone or camera that speaks MTP or PTP has no disk for the kernel to protect, so read-only mode does not make it read-only. Set storage to `block` to keep such devices out.
 - There is no notification on the desktop when a device is blocked. `lotus log` shows what happened.
 - LOTUS covers USB. It does not manage Thunderbolt, Bluetooth pairing, SATA ports or network shares.
