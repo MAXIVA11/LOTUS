@@ -113,6 +113,9 @@ EOF
 printf 'instance-id: lotus-test\nlocal-hostname: lotus-test\n' > "$work/meta-data"
 cloud-localds "$work/seed.img" "$work/user-data" "$work/meta-data"
 
+mkdir -p "$work/phone"
+echo "a file on the pretend phone" > "$work/phone/photo.txt"
+
 # Three small disks to plug in as USB sticks, each with a filesystem on it.
 for n in 1 2 3; do
     truncate -s 64M "$work/stick$n.img"
@@ -136,7 +139,7 @@ qemu-system-x86_64 -name lotus-test -machine "q35,accel=$accel" -cpu "$cpu" -smp
     -blockdev "driver=file,filename=$work/stick1.img,node-name=file1" -blockdev driver=raw,file=file1,node-name=disk1 \
     -blockdev "driver=file,filename=$work/stick2.img,node-name=file2" -blockdev driver=raw,file=file2,node-name=disk2 \
     -blockdev "driver=file,filename=$work/stick3.img,node-name=file3" -blockdev driver=raw,file=file3,node-name=disk3 \
-    -chardev null,id=nowhere \
+    -chardev null,id=nowhere -netdev user,id=net1 -audiodev none,id=silence \
     -qmp "unix:$qmp,server=on,wait=off" -pidfile "$work/qemu.pid" -daemonize \
     || { echo "QEMU did not start."; exit 2; }
 
@@ -170,6 +173,10 @@ MOUSE=LOTUSMOUSE1
 SERIAL=LOTUSSERIAL1
 HUB=LOTUSHUB1
 KBD2=LOTUSKBD2
+PHONE=LOTUSPHONE1
+NETWORK=LOTUSNET1
+SOUND=LOTUSSOUND1
+CARD=LOTUSCARD1
 
 # ---------------------------------------------------------------- installing
 
@@ -260,6 +267,42 @@ plug s1 usb-storage 6 drive=disk1 serial=$STICK1
 check "in another port it is still the trusted stick" "t wait-auth $STICK1 1 5 && t wait-block $STICK1"
 check "trusting the whole model lets the second stick in" "sudo lotus trust \"\$(t id $STICK2)\" --model && t wait-auth $STICK2 1 && t wait-block $STICK2"
 check "untrusting the model switches it off again and leaves the first on" "sudo lotus untrust 'VID_46F4&PID_0001' --yes && t wait-auth $STICK2 0 && t auth $STICK1 | grep -qx 1"
+
+# ---------------------------------------------------------------- other kinds
+
+section "Other kinds of device"
+check "storage is blocked and other devices are allowed" "sudo lotus usb allow && sudo lotus status | grep -q 'USB DEVICES *ALLOW'"
+plug p1 usb-mtp 9 "rootdir=$work/phone" readonly=on serial=$PHONE
+check "a phone is seen" "t present $PHONE"
+sleep 3
+check "a phone counts as storage and stays off" "t auth $PHONE | grep -qx 0 && sudo lotus devices | grep -B1 $PHONE | grep -q 'BLOCKED.*Phone or camera'"
+# Whether the machine's kernel has the driver for the emulated network adapter.
+# Without it the adapter is still switched on and off, it just never becomes a network interface.
+if g "sudo modprobe cdc_ether 2>/dev/null"; then network_driver=yes; else network_driver=no; fi
+links_before=$(g "ls /sys/class/net | wc -l")
+plug n1 usb-net 10 netdev=net1 serial=$NETWORK
+plug a1 usb-audio 11 audiodev=silence serial=$SOUND
+plug r1 usb-ccid 12 serial=$CARD
+check "a network adapter, a sound card and a card reader are let in while only storage is blocked" "t wait-auth $NETWORK 1 && t wait-auth $SOUND 1 && t wait-auth $CARD 1"
+check "LOTUS names what each of them is" "sudo lotus devices | grep -B1 $NETWORK | grep -q Network && sudo lotus devices | grep -B1 $SOUND | grep -q Audio && sudo lotus devices | grep -B1 $CARD | grep -q 'Smart card'"
+if [ "$network_driver" = yes ]; then
+    check "the network adapter gave the system a new network interface" "sleep 1; [ \"\$(ls /sys/class/net | wc -l)\" -gt $links_before ]"
+else
+    echo "  (this kernel has no driver for the emulated network adapter, so there is no network interface to count)"
+fi
+check "under trusted only all three are switched off" "sudo lotus usb trusted --yes && t wait-auth $NETWORK 0 && t wait-auth $SOUND 0 && t wait-auth $CARD 0"
+[ "$network_driver" = yes ] && check "the network interface is gone again" "[ \"\$(ls /sys/class/net | wc -l)\" -eq $links_before ]"
+check "keyboard and mouse are still on" "t auth $KBD | grep -qx 1 && t auth $MOUSE | grep -qx 1"
+unplug n1
+g "sudo dmesg -C"
+plug n1 usb-net 10 netdev=net1 serial=$NETWORK
+sleep 3
+check "plugged in again, the network adapter never starts" "t auth $NETWORK | grep -qx 0 && [ \"\$(ls /sys/class/net | wc -l)\" -eq $links_before ] && ! sudo dmesg | grep -Eq 'cdc_ether|rndis|usbnet'"
+g "sudo lotus devices | sed 's/^/    /'"
+unplug p1
+unplug n1
+unplug a1
+unplug r1
 
 # ---------------------------------------------------------------- hub
 

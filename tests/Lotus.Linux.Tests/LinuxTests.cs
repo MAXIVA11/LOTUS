@@ -154,6 +154,69 @@ namespace Lotus.Linux.Tests
             Assert.Equal(DeviceKinds.Storage | DeviceKinds.Input, device.Kinds);
         }
 
+        private static byte[] WithEndpoints(byte cls, byte sub, byte protocol, params byte[][] endpoints)
+        {
+            var body = new List<byte> { 9, 4, 0, 0, (byte)endpoints.Length, cls, sub, protocol, 0 };
+            foreach (byte[] endpoint in endpoints)
+            {
+                body.AddRange(new byte[] { 7, 5, endpoint[0], endpoint[1], 0x00, 0x02, 0 });
+            }
+            int total = 9 + body.Count;
+            var all = new List<byte> { 9, 2, (byte)total, (byte)(total >> 8), 1, 1, 0, 0x80, 50 };
+            all.AddRange(body);
+            return all.ToArray();
+        }
+
+        private static readonly byte[] BulkIn = { 0x81, 2 };
+        private static readonly byte[] BulkOut = { 0x01, 2 };
+        private static readonly byte[] InterruptIn = { 0x82, 3 };
+
+        [Fact]
+        public void An_old_phone_that_hides_media_transfer_behind_a_vendor_interface_counts_as_a_phone()
+        {
+            byte[] configuration = WithEndpoints(0xFF, 0xFF, 0x00, BulkIn, BulkOut, InterruptIn);
+            Assert.True(LinuxDeviceBackend.LooksLikeMediaTransfer(configuration));
+
+            sys.Plug("1-3", 0x18D1, 0x4EE1, "Old phone", "ABC", null,
+                descriptors: FakeSysfs.Descriptors(0x18D1, 0x4EE1, 0, configuration));
+            UsbDevice phone = Assert.Single(Backend().Scan());
+            Assert.True(phone.HasStorage);
+            Assert.Contains("MTP", phone.Functions);
+            Assert.Equal("Phone or camera", UsbClassifier.PrimaryLabel(phone.Kinds));
+        }
+
+        [Fact]
+        public void Other_vendor_interfaces_are_not_taken_for_a_phone()
+        {
+            // A debug bridge: two bulk endpoints and another subclass.
+            Assert.False(LinuxDeviceBackend.LooksLikeMediaTransfer(WithEndpoints(0xFF, 0x42, 0x01, BulkIn, BulkOut)));
+            // A serial adapter: the right endpoints, but not the subclass and protocol media transfer uses.
+            Assert.False(LinuxDeviceBackend.LooksLikeMediaTransfer(WithEndpoints(0xFF, 0x00, 0x00, InterruptIn, BulkOut, BulkIn)));
+            // The right interface with too few or too many endpoints.
+            Assert.False(LinuxDeviceBackend.LooksLikeMediaTransfer(WithEndpoints(0xFF, 0xFF, 0x00, BulkIn, BulkOut)));
+            Assert.False(LinuxDeviceBackend.LooksLikeMediaTransfer(
+                WithEndpoints(0xFF, 0xFF, 0x00, BulkIn, BulkOut, InterruptIn, new byte[] { 0x83, 2 })));
+            // A stick.
+            Assert.False(LinuxDeviceBackend.LooksLikeMediaTransfer(WithEndpoints(0x08, 0x06, 0x50, BulkIn, BulkOut)));
+            Assert.False(LinuxDeviceBackend.LooksLikeMediaTransfer(null));
+            Assert.False(LinuxDeviceBackend.LooksLikeMediaTransfer(new byte[] { 9, 4, 0 }));
+            Assert.False(LinuxDeviceBackend.LooksLikeMediaTransfer(new byte[] { 0, 0, 0, 0 }));
+
+            sys.Plug("1-3", 0x0403, 0x6001, "Serial adapter", "S1", new[] { new byte[] { 0xFF, 0xFF, 0xFF } });
+            UsbDevice adapter = Assert.Single(Backend().Scan());
+            Assert.False(adapter.HasStorage);
+            Assert.Equal(DeviceKinds.Other, adapter.Kinds);
+        }
+
+        [Fact]
+        public void A_phone_that_uses_the_still_image_class_is_a_phone()
+        {
+            sys.Plug("1-3", 0x18D1, 0x4EE1, "Pixel", "XYZ", new[] { new byte[] { 0x06, 0x01, 0x01 } });
+            UsbDevice phone = Assert.Single(Backend().Scan());
+            Assert.True(phone.HasStorage);
+            Assert.Equal(DeviceKinds.Portable, phone.Kinds);
+        }
+
         [Fact]
         public void A_hub_is_a_hub_and_a_fixed_port_means_built_in()
         {

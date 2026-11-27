@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" width="100%" alt="LOTUS. Local Operational Trusted USB System. Offline device control for Windows.">
+  <img src="docs/assets/banner.svg" width="100%" alt="LOTUS. Local Operational Trusted USB System. Offline device control for Windows and Linux.">
 </p>
 
 <p align="center">
@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="#install">Install</a> ·
+  <a href="#linux">Linux</a> ·
   <a href="#your-first-policy">First policy</a> ·
   <a href="#how-blocking-works">How it works</a> ·
   <a href="#limits">Limits</a> ·
@@ -17,9 +18,11 @@
   <a href="#build-from-source">Build</a>
 </p>
 
-LOTUS decides which USB devices are allowed to work on a Windows PC. You pick a policy in the app and a Windows service enforces it.
+LOTUS decides which USB devices are allowed to work on a computer. On Windows you pick a policy in the app and a Windows service enforces it. On Linux a daemon enforces it and you set the policy with the `lotus` command.
 
 It controls two things: removable storage, and every other plug and play (PnP) device on a USB port.
+
+Most of this page describes the Windows version. [Linux](#linux) has a section of its own.
 
 <p align="center">
   <img src="docs/images/demo.gif" width="100%" alt="A walkthrough of the LOTUS app in seven steps: it starts disarmed, you choose the rules and turn the master switch on, Apply lists what would be switched off, the status changes to armed, the device list shows three blocked devices, the trusted list shows one device, and the activity log lists each block.">
@@ -64,6 +67,33 @@ LOTUS runs on Windows 10 (version 1607 or newer) and Windows 11. It uses the .NE
 <p align="center">
   <img src="docs/images/setup.png" width="62%" alt="The setup window">
 </p>
+
+## Linux
+
+LOTUS for Linux has the same rules, the same decision engine and the same encrypted store. It has no window: a daemon enforces the policy, and you set it in a terminal.
+
+```sh
+tar -xzf lotus-*-linux-x64.tar.gz
+cd lotus-*-linux-x64
+sudo ./install.sh
+```
+
+```sh
+sudo lotus devices
+sudo lotus storage block
+sudo lotus arm
+```
+
+It needs a 64-bit Intel or AMD computer and a Linux that uses systemd. The program is one file that carries its own runtime.
+
+To block a device, LOTUS uses the switch the kernel has for every USB device, the `authorized` file. A device that is switched off there has no driver and none of its functions. With "hold new devices back" on, which is the default, the kernel does not switch on anything that is plugged in until LOTUS has looked at it, so a device the policy blocks never runs.
+
+> [!NOTE]
+> The Linux version is tested on Ubuntu 24.04 in a virtual machine, with USB devices that QEMU emulates. The kernel in that test is real and the devices are not. It has not been run against physical USB hardware.
+
+[docs/linux.md](docs/linux.md) has the commands, how blocking works on Linux, the limits and how it is tested.
+
+There is no macOS version. Blocking a USB device on macOS takes entitlements that Apple grants to signed drivers and security products, and this project has no Mac to test on.
 
 ## Your first policy
 
@@ -165,7 +195,7 @@ Use "Installed apps" in Windows Settings, or run `"C:\Program Files\LOTUS\Uninst
 
 ## Build from source
 
-You need Windows and the .NET SDK 8 or newer.
+For the Windows version you need Windows and the .NET SDK 8 or newer.
 
 ```powershell
 git clone https://github.com/MAXIVA11/LOTUS.git
@@ -177,15 +207,21 @@ powershell -ExecutionPolicy Bypass -File LOTUS\build.ps1
 
 The result is `dist\LOTUS-Setup.exe`. The script builds the app and the service, runs the unit tests, packs both into the setup program and prints its SHA-256 hash.
 
+The Linux version is built on Linux with `./build-linux.sh`, which writes `dist/lotus-<version>-linux-x64.tar.gz`.
+
 | Folder | Contents |
 | --- | --- |
-| `src/Lotus.Core` | Policy model, the decision engine, USB scanning and device control |
+| `src/Lotus.Core` | Policy model, the decision engine, the service loop and the encrypted store, which every version shares, and the Windows device calls |
 | `src/Lotus.Guard` | `LotusGuard.exe`, the Windows service |
 | `src/Lotus.App` | `LOTUS.exe`, the app and the notifier |
 | `src/Lotus.Setup` | `LOTUS-Setup.exe`, the installer and uninstaller |
+| `src/Lotus.Linux` | `lotus`, the Linux daemon and command |
+| `packaging/linux` | The systemd service and the install and uninstall scripts |
 | `tests/Lotus.Tests` | Unit tests for the engine, the enforcement loop, the encrypted store, strict mode and the control pipe |
+| `tests/Lotus.Linux.Tests` | The same tests against the Linux build, and tests for the Linux parts |
 | `tests/Lotus.Probe` | A small developer tool that runs single device calls, used by the hardware scripts |
-| `tests/hardware` | Scripts that test device control and a full install on real hardware |
+| `tests/hardware` | Scripts that test device control and a full install on real Windows hardware |
+| `tests/linux` | A script that tests a full install on a real Linux kernel in a virtual machine |
 | `tools` | Scripts that draw the icon, the artwork on this page and the walkthrough animation |
 
 ## Tests
@@ -193,6 +229,8 @@ The result is `dist\LOTUS-Setup.exe`. The script builds the app and the service,
 `dotnet test tests\Lotus.Tests` runs the unit tests. They cover the policy engine, the encrypted store and strict mode, and they run the real service loop against a simulated USB bus and talk to it over a real pipe.
 
 The scripts in `tests\hardware` need an administrator prompt and real devices. `e2e-install.ps1` updates whatever LOTUS is installed, also from 1.0 and 1.1, installs fresh, and then checks on real hardware that one chosen device is blocked and released, that Windows refuses a blocked device it has never seen and lets an allowed one in, that a blocked device stays off when it is plugged in again, that nothing in the store can be read, that the service resists being stopped, and that a changed policy store is put back. It ends by removing LOTUS and checking that nothing is left. Read the comments at the top of each script before running it.
+
+`dotnet test tests/Lotus.Linux.Tests` runs the shared tests against the Linux build, together with tests for the Linux parts on a made-up device tree. `tests/linux/vm-test.sh` boots Ubuntu under QEMU, installs LOTUS and plugs emulated USB devices in and out. [docs/linux.md](docs/linux.md#how-it-is-tested) lists what it checks.
 
 ## About the look
 

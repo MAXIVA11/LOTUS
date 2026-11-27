@@ -2,6 +2,8 @@
 
 This page says what LOTUS protects against, how it protects itself, and where the protection ends.
 
+It describes the Windows version. [On Linux](#on-linux) lists what is different there.
+
 ## Who LOTUS is built to stop
 
 | Attacker | What LOTUS does about it |
@@ -73,6 +75,20 @@ Strict mode needs Windows 10 21H2 or newer. Disarming, the rescue command and un
 - A data folder that already exists when LOTUS is installed is only kept if it is owned by the system or the Administrators group and ordinary users cannot write to it. Otherwise it is deleted, without following links inside it, and created again.
 - Setup restricts its library search to the Windows system folder before it loads anything, so a library planted next to it in a Downloads folder is not picked up.
 - The setup log goes into the install folder, which only administrators can write to.
+
+## On Linux
+
+The policy store on Linux has the same format and the same checks: a changed, replaced or deleted store is put back while the daemon runs, and a store that is wrecked while the daemon is down locks LOTUS down until the installer is run again.
+
+Three things are different.
+
+- The key. Linux has no counterpart to the Windows data protection service, so `seal.key` is a file that only root can read, in a folder only root can enter. The encryption keeps the policy from everyone who is not root. Root can read the key.
+- The daemon. On Windows the service resists being stopped. On Linux root can stop the daemon with `systemctl stop lotus`. Stopping it opens nothing: blocked devices stay off and the USB controllers stay shut. A daemon that is killed is started again by systemd after a second.
+- The start of the computer. The kernel forgets its USB switches when the computer restarts. Until the daemon is running again, the kernel runs every device that is plugged in.
+
+The control channel is a Unix socket, `/run/lotus/control.sock`, that only root can open. The daemon also asks the kernel who is on the other end of every connection and turns away anyone who is not root. It runs as root without any capability, sees the system read-only apart from its own folders and the udev rules folder, and has no network.
+
+[linux.md](linux.md) has the rest.
 
 ## What the security review of 1.0 found
 

@@ -21,6 +21,9 @@ esac
 updating=no
 [ -x /usr/local/bin/lotus ] && updating=yes
 
+# Read-only mode writes one rule here. The service may write nowhere else outside its own folders.
+mkdir -p /etc/udev/rules.d
+
 # The new program goes in under another name first, so a daemon that is
 # running never sees half a file.
 install -m 0755 "$here/lotus" /usr/local/bin/lotus.new
