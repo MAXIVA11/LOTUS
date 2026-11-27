@@ -48,6 +48,7 @@ A new installation starts like this: disarmed, removable storage on Allow, PnP d
 - With "Refuse new devices before they start" ticked, a blocked device this PC has never seen does not start at all: Windows itself refuses to install it.
 - The policy and the trusted list sit in an encrypted store that only the LOTUS service can open. Someone who finds the files cannot read them, and a changed file is put back.
 - An activity log records every block and release, and a small notifier next to the clock tells whoever is at the PC why the thing they just plugged in does nothing.
+- Every line of that log also goes to the Windows event log, or to the journal on Linux, with an event number that stays the same from version to version. [docs/logging.md](docs/logging.md) has the table.
 
 <img src="docs/assets/divider.svg" width="100%" alt="">
 
@@ -133,6 +134,8 @@ A device that is not plugged in can be trusted by hand on the Trusted page. Choo
 
 Device Manager shows these under Details, as "Hardware Ids" and "Device instance path". An entry made by hand covers the device whatever it does, because LOTUS has not seen it. A whole vendor is a wide door: it also lets in devices you have never seen.
 
+Trust can end by itself. Every entry on the Trusted page has a field for its end. Type how long the trust should last, such as `12h`, `7d` or `2w`, or a date such as `2026-12-04` or `2026-12-04 17:00`, and press <kbd>Enter</kbd>. When the time is up, LOTUS takes the entry off the list, blocks the device if the policy says so, and writes "trust ended" to the log. Clear the field for trust without an end.
+
 <p align="center">
   <img src="docs/images/devices.png" width="100%" alt="The device list, with three blocked devices at the top">
 </p>
@@ -196,7 +199,7 @@ The policy and the trusted list are kept in an encrypted store, `C:\ProgramData\
 - The service cannot be stopped, reconfigured or deleted with the Windows tools. If its process is killed, Windows starts it again after a second, and blocked devices stay blocked in the meantime.
 - If the store is wrecked while the service is not running, LOTUS locks down: it blocks removable storage and untrusted devices until setup is run again.
 
-[docs/security.md](docs/security.md) has the details, the results of the security review of 1.0, and what LOTUS cannot protect against.
+[docs/security.md](docs/security.md) has the details, the results of the security review of 1.0, and what LOTUS cannot protect against. If you find a weakness, [SECURITY.md](SECURITY.md) says how to report it in private.
 
 ## Try it without installing
 
@@ -243,6 +246,7 @@ The Linux version is built on Linux with `./build-linux.sh`, which writes `dist/
 | `packaging/linux` | The systemd service and the install and uninstall scripts |
 | `tests/Lotus.Tests` | Unit tests for the engine, the enforcement loop, the encrypted store, strict mode and the control pipe |
 | `tests/Lotus.Linux.Tests` | The same tests against the Linux build, and tests for the Linux parts |
+| `tests/Lotus.Fuzz` | A fuzzer that feeds the parsers broken input and checks what must hold whatever comes in |
 | `tests/Lotus.Probe` | A small developer tool that runs single device calls, used by the hardware scripts |
 | `tests/hardware` | Scripts that test device control and a full install on real Windows hardware |
 | `tests/linux` | A script that tests a full install on a real Linux kernel in a virtual machine |
@@ -254,6 +258,12 @@ The Linux version is built on Linux with `./build-linux.sh`, which writes `dist/
 The scripts in `tests\hardware` need an administrator prompt and real devices. `e2e-install.ps1` updates whatever LOTUS is installed, also from 1.0 and 1.1, installs fresh, and then checks on real hardware that one chosen device is blocked and released, that Windows refuses a blocked device it has never seen and lets an allowed one in, that a blocked device stays off when it is plugged in again, that nothing in the store can be read, that the service resists being stopped, and that a changed policy store is put back. It ends by removing LOTUS and checking that nothing is left. Read the comments at the top of each script before running it.
 
 `dotnet test tests/Lotus.Linux.Tests` runs the shared tests against the Linux build, together with tests for the Linux parts on a made-up device tree. `tests/linux/vm-test.sh` boots Ubuntu under QEMU, installs LOTUS and plugs emulated USB devices in and out. [docs/linux.md](docs/linux.md#how-it-is-tested) lists what it checks.
+
+`dotnet run -c Release --project tests/Lotus.Fuzz -- --seconds 60` feeds broken input to the places where LOTUS reads bytes it did not write: JSON, the policy, the files of the store, and what a USB device says about itself. It starts from valid samples and changes them at random. It is not guided by code coverage. The build runs it for two minutes on every change.
+
+Every file the build produces is attested. With the GitHub command line tool, `gh attestation verify LOTUS-Setup.exe --repo MAXIVA11/LOTUS` checks that a download was built by this repository's workflow and from which commit. That holds for releases after 1.5.0.
+
+[CHANGELOG.md](CHANGELOG.md) lists what changed in each version.
 
 ## Disclaimer
 

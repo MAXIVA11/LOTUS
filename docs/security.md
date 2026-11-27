@@ -43,6 +43,8 @@ What follows from that:
 
 Two files in `C:\ProgramData\LOTUS` are readable by every user, because the notifier next to the clock runs without special rights and needs them: `status.json` says whether LOTUS is armed, and `events.jsonl` is the activity log with the names of devices that were blocked. Neither contains the policy settings or the trusted list.
 
+The service writes the same lines to the Application log of Windows, under the source `LotusGuard`. Windows lets signed-in users read that log, so it shows what `events.jsonl` shows and nothing more. [logging.md](logging.md) has the event numbers. When a trust entry reaches its end, the line that says so names that entry, which by then is off the list.
+
 ## Strict mode
 
 With "Refuse new devices before they start" on, LOTUS uses the device installation restrictions that are built into Windows, the ones Group Policy offers under "Device Installation Restrictions". Windows checks them every time it is about to install a device, before any driver is loaded.
@@ -84,7 +86,7 @@ Three things are different.
 
 - The key. Linux has no counterpart to the Windows data protection service, so `seal.key` is a file that only root can read, in a folder only root can enter. The encryption keeps the policy from everyone who is not root. Root can read the key.
 - The daemon. On Windows the service resists being stopped. On Linux root can stop the daemon with `systemctl stop lotus`. Stopping it opens nothing: blocked devices stay off and the USB controllers stay shut. A daemon that is killed is started again by systemd after a second.
-- The start of the computer. The kernel forgets its USB switches when the computer restarts. Until the daemon is running again, the kernel runs every device that is plugged in.
+- The start of the computer. The kernel forgets its USB switches when the computer restarts. Until the daemon is running again, the kernel runs every device that is plugged in. Started with `usbcore.authorized_default=2`, the kernel holds back every device that is not built in until the daemon has looked at it, which closes that gap. [linux.md](linux.md#before-the-daemon-starts) has the steps and the risk that comes with them.
 
 The control channel is a Unix socket, `/run/lotus/control.sock`, that only root can open. The daemon also asks the kernel who is on the other end of every connection and turns away anyone who is not root. It runs as root without any capability, sees the system read-only apart from its own folders and the udev rules folder, and has no network.
 
@@ -131,4 +133,6 @@ The uninstaller does all of this. If it cannot be used, an administrator can do 
 
 ## Reporting a problem
 
-Open an issue at https://github.com/MAXIVA11/LOTUS/issues.
+A weakness that someone could use against a PC that runs LOTUS goes to the private report form: https://github.com/MAXIVA11/LOTUS/security/advisories/new. Only the maintainer sees it. [SECURITY.md](../SECURITY.md) says what a report should hold.
+
+Everything else is an issue at https://github.com/MAXIVA11/LOTUS/issues.

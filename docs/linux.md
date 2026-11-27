@@ -49,7 +49,7 @@ Run on its own at a terminal, `lotus` opens five pages: Control, Devices, Truste
 | <kbd>←</kbd> <kbd>→</kbd>, <kbd>Space</kbd> | Change the setting that is marked |
 | <kbd>a</kbd> | Apply the changes on the Control page |
 | <kbd>t</kbd>, <kbd>m</kbd>, <kbd>u</kbd> | On Devices: trust the device, trust its model, take the trust away |
-| <kbd>n</kbd>, <kbd>x</kbd> | On Trusted: add an entry by hand, remove the entry |
+| <kbd>n</kbd>, <kbd>e</kbd>, <kbd>x</kbd> | On Trusted: add an entry by hand, give the entry an end, remove the entry |
 | <kbd>Esc</kbd> | Close a dialog, or drop changes that were not applied |
 | <kbd>q</kbd> | Leave |
 
@@ -100,6 +100,7 @@ A change that would switch off a device that works right now lists those devices
 | --- | --- |
 | `lotus` | Open the interactive interface |
 | `lotus status` | What is in force right now |
+| `lotus status --json` | The same as one JSON object, for monitoring tools |
 | `lotus devices` | The connected USB devices and what the policy says about each |
 | `lotus log [lines]` | The activity log |
 | `lotus storage allow\|readonly\|block` | USB drives, card readers, cameras and phones |
@@ -113,6 +114,8 @@ A change that would switch off a device that works right now lists those devices
 | `lotus trust vendor <vid>` | Trust every device of a vendor, for example `046D` |
 | `lotus trust model <vid:pid>` | Trust every unit of a model, for example `046D:C52B` |
 | `lotus trust id <instance path>` | Trust one device by its path, plugged in or not |
+| `lotus trust ... --for 7d` | Trust that ends by itself after a length of time: `90m`, `12h`, `7d`, `2w` |
+| `lotus trust ... --until 2026-12-04` | Trust that ends on a date, with a time if you like: `"2026-12-04 17:00"` |
 | `lotus trusted` | The trusted list |
 | `lotus untrust <number\|id\|model\|vendor>` | Take an entry off the trusted list |
 | `lotus release-all` | Disarm and switch every blocked device back on |
@@ -121,6 +124,12 @@ A change that would switch off a device that works right now lists those devices
 Every command except `version` and `help` needs root, because only root may talk to the daemon.
 
 The three `trust` commands that take a typed value are for a device that need not be plugged in. Add `--name "..."` to give the entry a name. An entry made this way covers the device whatever it does, because LOTUS has not seen it, and a whole vendor also lets in devices you have never seen.
+
+`--for` and `--until` work with every `trust` command. A date without a time means the end of that day by the computer's clock. When the time is up, the daemon takes the entry off the list, switches the device off if the policy blocks it, and writes "trust ended" to the log. Given for an entry that is on the list already, they change its end, and `--for never` takes the end away. `lotus trusted` shows the end of every entry that has one.
+
+`lotus status --json` is for monitoring tools. It prints one object with the fields `version`, `running`, `armed`, `lockdown`, `storage`, `usb`, `keepInput`, `strict`, `strictState`, `trusted`, `trustedWithEnd`, `connected`, `blocked`, `lastTamper` and `heldAtStart`. The names stay the same from version to version. When the daemon does not answer, it still prints JSON, with `running` false and the reason in `error`, and ends with exit code 1.
+
+The daemon also writes every line of the activity log to the systemd journal. [logging.md](logging.md) has the fields and the event numbers.
 
 ## How blocking works on Linux
 
@@ -137,6 +146,34 @@ LOTUS hears about new devices from the kernel itself, over a netlink socket. It 
 Read-only mode is a udev rule, `/etc/udev/rules.d/99-lotus-readonly.rules`. It marks every USB disk as read-only in the kernel the moment the disk appears, before the desktop can mount it. The kernel then refuses writes whatever a mount command asks for. When the mode changes, LOTUS switches connected disks off and on once so that they appear again under the new rule.
 
 LOTUS keeps a ledger of the devices it switched off. When the policy stops blocking one of them, that is the device it switches back on.
+
+### Before the daemon starts
+
+The kernel forgets its USB switches when the computer restarts, and the daemon starts some seconds after the kernel. In that time the kernel runs every device that is plugged in. A device that sits in a port when the computer is switched on gets those seconds, whatever the policy says.
+
+The kernel can close that gap itself. Started with `usbcore.authorized_default=2` on its command line, it switches on only the devices its firmware tables mark as built in, and leaves every other one waiting from the first moment. LOTUS notices the setting when the daemon starts, and takes over:
+
+- a waiting device the policy blocks goes on the list of blocked devices without ever having run
+- a waiting device the policy allows is switched on
+- with strict mode off, the controllers are opened again for what is plugged in later, and with strict mode on they stay shut as usual
+
+On Debian and Ubuntu, which start with GRUB:
+
+```sh
+echo 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT usbcore.authorized_default=2"' | sudo tee /etc/default/grub.d/99-lotus.cfg
+sudo update-grub
+```
+
+After the next restart, `cat /sys/module/usbcore/parameters/authorized_default` prints 2 and `lotus status` has the line "AT START: DEVICES WAIT FOR LOTUS". To undo it, delete the file and run `sudo update-grub` again.
+
+Other systems have their own way of adding a kernel parameter. On Fedora and RHEL that is `sudo grubby --update-kernel=ALL --args=usbcore.authorized_default=2`. This has only been tested on Ubuntu 24.04.
+
+> [!WARNING]
+> With this setting, nothing but the LOTUS daemon switches on a USB device that is not built in. On a desktop computer that includes the keyboard and the mouse. Before you set it, read these.
+>
+> - If the daemon cannot start, those devices stay off. Restart, and at the boot menu, where the keyboard works because the firmware drives it, edit the kernel line and delete `usbcore.authorized_default=2`.
+> - Take the setting off before you uninstall LOTUS, or right after. The uninstaller reminds you.
+> - Do not use it on a computer that starts from a USB disk. The kernel would hold back the disk it is starting from.
 
 ### The disk the system runs from
 
@@ -190,7 +227,7 @@ The daemon runs as root with no capabilities at all, a read-only view of the sys
 These come on top of the [limits that apply everywhere](../README.md#limits).
 
 - Root can do anything LOTUS can do, and undo it. LOTUS on Linux protects a computer from the devices plugged into it and from users who are not root.
-- Stopping the daemon opens nothing: blocked devices stay off and the controllers stay shut. But a restart of the computer resets the kernel's switches. From power-on until the daemon starts, the kernel runs every device that is plugged in. The daemon then switches off what the policy blocks.
+- Stopping the daemon opens nothing: blocked devices stay off and the controllers stay shut. But a restart of the computer resets the kernel's switches. From power-on until the daemon starts, the kernel runs every device that is plugged in. The daemon then switches off what the policy blocks. A kernel setting closes this gap, with a risk of its own: see [Before the daemon starts](#before-the-daemon-starts).
 - With strict mode off, which is how LOTUS starts, a blocked device that is plugged in runs until the daemon has switched it off.
 - If another program already holds the USB controllers shut, as USBGuard does, LOTUS does not touch them, and strict mode is off. It still switches blocked devices off after they start.
 - The kernel shows a device that is off in one way only, whoever switched it off. With strict mode on, LOTUS takes a device that is off and not on its ledger for one the kernel is holding back, and switches it on if the policy allows it. A device you switch off by hand through its `authorized` file does not stay off unless the policy blocks it.
@@ -205,6 +242,7 @@ With `lotus input off`, an untrusted keyboard is blocked like any other device.
 - A laptop's own keyboard is usually not a USB device and keeps working.
 - Over the network nothing changes: `ssh` in and run `sudo lotus release-all`.
 - Otherwise restart the computer and start it in rescue mode: at the boot menu, add `systemd.unit=rescue.target` to the kernel line. The daemon does not run there, and after a restart the kernel has every device switched on. Then run `systemctl start lotus` and `lotus release-all`, or remove LOTUS with `lotus-uninstall`.
+- If the kernel is started with `usbcore.authorized_default=2`, delete that from the kernel line in the same step. Otherwise the kernel holds the keyboard back in rescue mode too.
 
 ## Uninstall
 
@@ -249,6 +287,9 @@ lotus --sysfs ./fake-sys --state ./state --socket ./lotus.sock status
 - a damaged store locks LOTUS down and the installer resets it
 - removal leaves no file and no device switched off
 - the interactive interface arms LOTUS, trusts and untrusts a stick and adds a vendor by hand against the real daemon, and on a pseudo terminal it starts, reacts to keys and hands the terminal back
+- trust given for a minute ends by itself: the stick is switched off, the entry is gone, and the log and the journal say so
+- the journal has the daemon's lines with their event numbers, and `lotus status --json` says what is in force
+- restarted with `usbcore.authorized_default=2`, the kernel holds every device back, LOTUS switches on the ones the policy allows, and a stick it has never seen and the policy blocks never runs, with strict mode off and with it on
 - a machine that itself starts from a USB disk keeps that disk: it is not switched off under any rule, it stays writable in read-only mode, and the machine starts again with read-only mode on
 
 CI runs both on every change.

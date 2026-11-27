@@ -30,6 +30,7 @@
     <Compile Include="..\Lotus.Core\LotusPaths.cs" Link="Core\LotusPaths.cs" />
     <Compile Include="..\Lotus.Core\Policy.cs" Link="Core\Policy.cs" />
     <Compile Include="..\Lotus.Core\PolicyEngine.cs" Link="Core\PolicyEngine.cs" />
+    <Compile Include="..\Lotus.Core\SystemLog.cs" Link="Core\SystemLog.cs" />
     <Compile Include="..\Lotus.Core\SystemWords.cs" Link="Core\SystemWords.cs" />
     <Compile Include="..\Lotus.Core\PublicStatus.cs" Link="Core\PublicStatus.cs" />
     <Compile Include="..\Lotus.Core\SimulatedBackend.cs" Link="Core\SimulatedBackend.cs" />

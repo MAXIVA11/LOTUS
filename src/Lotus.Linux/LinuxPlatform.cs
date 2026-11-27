@@ -56,6 +56,8 @@ namespace Lotus.Linux
 
         private readonly string sysfsRoot;
         private readonly string readOnlyRulePath;
+        /// <summary>Tests point this at a file of their own, in place of the kernel's setting.</summary>
+        public string KernelSettingPath;
         private LinuxDeviceBackend backend;
 
         /// <param name="sysfsRoot">Where the kernel lists USB devices. Tests and the developer mode point this at a made-up tree.</param>
@@ -85,7 +87,13 @@ namespace Lotus.Linux
         {
             var linux = deviceBackend as LinuxDeviceBackend;
             if (linux == null) return new NoInstallGate();
-            return new LinuxUsbGate(linux, Path.Combine(LotusPaths.SecureDir, "controllers.saved"));
+            // The kernel's own setting only means something for the real device tree.
+            var gate = new LinuxUsbGate(linux, Path.Combine(LotusPaths.SecureDir, "controllers.saved"),
+                KernelSettingPath ?? (sysfsRoot == LinuxDeviceBackend.DefaultRoot ? LinuxUsbGate.KernelSetting : null));
+            gate.TakeOverAtStart();
+            // A controller that shows up later, a dock for example, starts in the kernel's waiting state too.
+            linux.BeforeScan = gate.TakeOverAtStart;
+            return gate;
         }
 
         public override IControlServer CreateControlServer(string name,
@@ -145,6 +153,12 @@ namespace Lotus.Linux
                 Directory.CreateDirectory(LotusPaths.SecureDir);
                 onError("The permissions on the LOTUS state folder could not be set. " + ex.Message);
             }
+        }
+
+        public override ISystemLog CreateSystemLog()
+        {
+            // Only the daemon on the real device tree writes there. Tests and rehearsals do not.
+            return sysfsRoot == LinuxDeviceBackend.DefaultRoot && JournalLog.Available() ? new JournalLog() : null;
         }
 
         public override void ConfigureStore(SecureStore store)

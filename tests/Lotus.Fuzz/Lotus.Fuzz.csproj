@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Lotus.Fuzz</RootNamespace>
+    <AssemblyName>lotus-fuzz</AssemblyName>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The parsers under test are the ones the Linux program carries, which are the files of Lotus.Core. -->
+    <ProjectReference Include="..\..\src\Lotus.Linux\Lotus.Linux.csproj" />
+  </ItemGroup>
+</Project>

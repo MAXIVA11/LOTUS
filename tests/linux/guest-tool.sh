@@ -61,6 +61,10 @@ read_only_is() {
     [ "$(cat "/sys/block/$b/ro")" = "$2" ]
 }
 
+defaults_are() {
+    [ "$(cat "$root"/usb*/authorized_default | sort -u | tr '\n' ' ')" = "$1 " ]
+}
+
 case "${1:-}" in
     name) name "$2" ;;
     present) until_true "${3:-8}" name "$2" ;;
@@ -80,6 +84,21 @@ case "${1:-}" in
         printf 'USB\\VID_%s&PID_%s\\%s\n' "$(tr a-f A-F < "$root/$n/idVendor")" "$(tr a-f A-F < "$root/$n/idProduct")" "$2"
         ;;
     defaults) cat "$root"/usb*/authorized_default | sort -u | tr '\n' ' ' ;;
+    # t wait-defaults 1: every controller has this setting, now or within a few seconds.
+    wait-defaults) until_true "${3:-8}" defaults_are "$2" ;;
+    # t json 'd.armed and d.trusted == 1': something that must hold for what "lotus status --json" prints.
+    json)
+        sudo lotus status --json | python3 -c 'import json, sys, types
+d = types.SimpleNamespace(**json.load(sys.stdin))
+sys.exit(0 if eval(sys.argv[1]) else 1)' "$2"
+        ;;
+    # t journal blocked [text]: the journal holds an entry for this kind of event, with the text in it.
+    journal)
+        sudo journalctl -t lotus -o json --no-pager "LOTUS_EVENT=$2" | grep -F -- "${3:-LOTUS_EVENT}" | grep -q .
+        ;;
+    # What the kernel wrote about a device since the computer started.
+    held-at-start) n=$(name "$2") || exit 2; sudo dmesg | grep -q "usb $n: Device is not authorized for usage" ;;
+    switched-on) n=$(name "$2") || exit 2; sudo dmesg | grep -q "usb $n: authorized to connect" ;;
     all-on)
         for file in "$root"/*/authorized; do
             [ "$(cat "$file")" = 1 ] || { echo "$file is off"; exit 1; }

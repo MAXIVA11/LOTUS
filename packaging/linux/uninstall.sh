@@ -72,6 +72,14 @@ rm -rf /var/lib/lotus /run/lotus /var/cache/lotus
 rm -f /usr/local/bin/lotus /usr/local/bin/lotus.new
 
 say "LOTUS is removed. Nothing is blocked."
+if [ "$(cat /sys/module/usbcore/parameters/authorized_default 2>/dev/null)" = 2 ]; then
+    # The kernel was told to hold devices back until LOTUS has looked at them.
+    # With LOTUS gone, the next start would leave them all switched off.
+    printf '\n  !!  %s\n' "This system starts with usbcore.authorized_default=2 on the kernel command line." >&2
+    printf '      %s\n' "From the next start on, nothing switches on a USB device that is not built in," >&2
+    printf '      %s\n' "a keyboard or mouse included. Take that setting off the kernel command line" >&2
+    printf '      %s\n\n' "before you restart. docs/linux.md says how." >&2
+fi
 # This script is the last thing to go.
 rm -f /usr/local/sbin/lotus-uninstall
 exit 0

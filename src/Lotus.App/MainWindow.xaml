@@ -551,6 +551,8 @@
                             <ui:GlitchText Text="TRUSTED" Style="{StaticResource PageTitle}" />
                             <TextBlock Style="{StaticResource T.Dim}"
                                        Text="Devices on this list are never blocked. Add one from the Devices page while it is plugged in, or by hand below." />
+                            <TextBlock x:Name="TermHint" Style="{StaticResource T.Label}" Margin="0,6,0,0" TextWrapping="Wrap"
+                                       AutomationProperties.AutomationId="TrustTermHint" />
                         </StackPanel>
 
                         <!-- Adding an entry for a device that is not plugged in. -->
@@ -612,6 +614,7 @@
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
                                                 <Rectangle Fill="{StaticResource B.Cyan}" />
                                                 <StackPanel Grid.Column="1" Margin="18,11,10,12">
@@ -634,7 +637,18 @@
                                                                Style="{StaticResource T.Label}"
                                                                HorizontalAlignment="Right" Margin="0,6,0,0" />
                                                 </StackPanel>
-                                                <Button Grid.Column="3" Style="{StaticResource Btn.Small}" Content="REMOVE"
+                                                <!-- How long the trust lasts. Empty means it has no end. -->
+                                                <StackPanel Grid.Column="3" VerticalAlignment="Center" Margin="0,6,14,8" Width="168">
+                                                    <TextBlock Text="{Binding TermLabel}" Style="{StaticResource T.Label}"
+                                                               Margin="1,0,0,4" />
+                                                    <TextBox Style="{StaticResource Field}" Text="{Binding Until, Mode=OneTime}"
+                                                             MaxLength="40" Height="32"
+                                                             AutomationProperties.AutomationId="TrustUntil"
+                                                             AutomationProperties.Name="Trust ends"
+                                                             ToolTip="12h, 7d, 2w, or a date such as 2026-12-04. Empty means no end. Enter saves."
+                                                             KeyDown="OnTrustTermKey" />
+                                                </StackPanel>
+                                                <Button Grid.Column="4" Style="{StaticResource Btn.Small}" Content="REMOVE"
                                                         Click="OnRemoveTrust" VerticalAlignment="Center"
                                                         Margin="0,0,10,0" Width="120" />
                                             </Grid>

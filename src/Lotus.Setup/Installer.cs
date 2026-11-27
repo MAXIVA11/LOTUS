@@ -437,23 +437,9 @@ namespace Lotus.Setup
             }
         }
 
-        /// <summary>
-        /// LOTUS 1.0 let Windows register an event log source for the service and
-        /// wrote its setup log into the TEMP folder. Neither is used any more.
-        /// </summary>
+        /// <summary>LOTUS 1.0 wrote its setup log into the TEMP folder. It is not used any more.</summary>
         private void RemoveLeftoversOfEarlierVersions()
         {
-            try
-            {
-                using (RegistryKey machine = OpenMachine())
-                {
-                    machine.DeleteSubKeyTree(EventLogKey, false);
-                }
-            }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
-                                       ex is System.Security.SecurityException || ex is ArgumentException)
-            {
-            }
             DeleteOldSetupLog();
         }
 
@@ -656,7 +642,7 @@ namespace Lotus.Setup
                         run?.DeleteValue(ProductName, false);
                     }
                     machine.DeleteSubKeyTree(UninstallKey, false);
-                    // LOTUS 1.0 let Windows register an event log source for the service.
+                    // The service registers itself as a source of the Windows event log.
                     machine.DeleteSubKeyTree(EventLogKey, false);
                 }
                 ResetRequest.Forget();

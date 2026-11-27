@@ -526,6 +526,90 @@ namespace Lotus.Linux.Tests
         // ---------- activity and about ----------
 
         [Fact]
+        public void E_gives_the_chosen_entry_an_end_and_the_list_shows_it()
+        {
+            daemon.Policy.AddTrust(TrustEntry.ForDevice(Devices.Stick()));
+            Start();
+            Press("3 e");
+            string form = Screen();
+            Assert.Contains("TRUST UNTIL", form);
+            Assert.Contains("Now: no end", form);
+            Assert.Contains("12h, 7d or 2w", form);
+
+            DateTime before = DateTime.UtcNow;
+            Press("text:7d enter");
+
+            TrustEntry entry = daemon.Applied.Single().Trusted.Single();
+            Assert.NotNull(entry.UntilUtc);
+            Assert.InRange(entry.UntilUtc.Value, before.AddDays(7).AddSeconds(-2), DateTime.UtcNow.AddDays(7).AddSeconds(2));
+            string list = Screen();
+            Assert.DoesNotContain("TRUST UNTIL", list);
+            Assert.Contains("UNTIL " + entry.UntilText(), list);
+            Assert.Contains("ends on " + entry.UntilText(), list);
+        }
+
+        [Fact]
+        public void An_empty_field_takes_the_end_away_again()
+        {
+            TrustEntry limited = TrustEntry.ForDevice(Devices.Stick());
+            limited.UntilUtc = DateTime.UtcNow.AddDays(3);
+            daemon.Policy.AddTrust(limited);
+            Start();
+            Press("3");
+            Assert.Contains("UNTIL " + limited.UntilText(), Screen());
+
+            Press("e");
+            Assert.Contains("Now: until " + limited.UntilText(), Screen());
+            Press("enter");
+
+            Assert.Null(daemon.Applied.Single().Trusted.Single().UntilUtc);
+            Assert.DoesNotContain("UNTIL ", Screen());
+            Assert.Contains("has no end", Screen());
+        }
+
+        [Fact]
+        public void A_time_that_cannot_be_read_keeps_the_form_open_and_changes_nothing()
+        {
+            daemon.Policy.AddTrust(TrustEntry.ForDevice(Devices.Stick()));
+            Start();
+            Press("3 e text:tomorrow enter");
+            Assert.Contains("TRUST UNTIL", Screen());
+            Assert.Contains("Give a length of time", Screen());
+            Assert.Empty(daemon.Applied);
+
+            Press("esc");
+            Assert.DoesNotContain("TRUST UNTIL", Screen());
+            Assert.Empty(daemon.Applied);
+        }
+
+        [Fact]
+        public void The_end_of_one_entry_leaves_the_others_as_they_are()
+        {
+            daemon.Policy.AddTrust(TrustEntry.ForDevice(Devices.Stick()));
+            daemon.Policy.AddTrust(TrustEntry.ForDevice(Devices.Headset()));
+            Start();
+            Press("3 down e text:12h enter");
+
+            Policy applied = daemon.Applied.Single();
+            Assert.Null(applied.Trusted[0].UntilUtc);
+            Assert.NotNull(applied.Trusted[1].UntilUtc);
+        }
+
+        [Fact]
+        public void The_trusted_page_names_the_key_for_the_end_date()
+        {
+            daemon.Policy.AddTrust(TrustEntry.ForDevice(Devices.Stick()));
+            Start();
+            Press("3");
+            Assert.Contains("e end date", Screen());
+            // With nothing on the list there is nothing to limit.
+            daemon.Policy.Trusted.Clear();
+            app.Refresh();
+            Press("e");
+            Assert.DoesNotContain("TRUST UNTIL", Screen());
+        }
+
+        [Fact]
         public void The_activity_page_shows_the_log_newest_first_and_scrolls()
         {
             daemon.Events.Clear();

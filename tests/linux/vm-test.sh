@@ -171,6 +171,7 @@ fi
 STICK1=LOTUSSTICK1
 STICK2=LOTUSSTICK2
 STICK3=LOTUSSTICK3
+STICK4=LOTUSSTICK4
 KBD=LOTUSKBD1
 MOUSE=LOTUSMOUSE1
 SERIAL=LOTUSSERIAL1
@@ -201,6 +202,14 @@ check "the log says the daemon started" "sudo lotus log 50 | grep -q 'started'"
 check "a new installation allows storage and every device" "sudo lotus status | grep -Eq 'STORAGE +ALLOW' && sudo lotus status | grep -Eq 'USB DEVICES +ALLOW'"
 check "it keeps keyboards and mice working, has strict mode off and trusts nothing" "sudo lotus status | grep -q 'ALWAYS WORK' && sudo lotus status | grep -q 'SWITCHED OFF AFTER THEY START' && sudo lotus status | grep -Eq 'TRUSTED +0'"
 check "the trusted list is empty" "sudo lotus trusted | grep -q 'Nothing is trusted yet'"
+
+section "For monitoring tools and log collectors"
+g "sudo lotus status --json" | sed 's/^/    /'
+check "the status comes as JSON that says what is in force" "t json 'd.running and not d.armed and not d.lockdown and d.storage == \"allow\" and d.usb == \"allow\" and d.keepInput and not d.strict and d.trusted == 0 and d.blocked == 0'"
+check "it carries the version and no tampering" "t json 'len(d.version.split(\".\")) == 3 and d.lastTamper is None and not d.heldAtStart'"
+check "someone who is not root gets JSON too, which says the daemon did not answer, and exit code 1" "lotus status --json > out.json; [ \$? = 1 ] && python3 -c 'import json; d = json.load(open(\"out.json\")); assert d[\"running\"] is False and \"armed\" not in d'"
+check "the journal has the start of the daemon, with its event number" "t journal guard_started '\"LOTUS_EVENT_ID\":\"1000\"'"
+check "the journal knows the line came from the lotus service" "t journal guard_started '\"_SYSTEMD_UNIT\":\"lotus.service\"'"
 
 # ---------------------------------------------------------------- disarmed
 
@@ -270,6 +279,9 @@ check "strict mode is off until it is chosen, so the controllers are still open"
 check "switching strict mode on shuts every controller" "sudo lotus strict on && sleep 1 && [ \"\$(t defaults)\" = '0 ' ] && sudo lotus status | grep -q 'REFUSED BEFORE THEY START'"
 check "LOTUS shows the stick as blocked and says why" "sudo lotus devices | grep -q 'BLOCKED.*Storage' && sudo lotus devices | grep -q 'removable storage is blocked'"
 check "the log has the block" "sudo lotus log 50 | grep -q 'BLOCKED.*QEMU USB HARDDRIVE was blocked'"
+check "the journal has it too, with the device and the number 2100" "t journal blocked $STICK1 && t journal blocked '\"LOTUS_EVENT_ID\":\"2100\"' && t journal blocked '\"LOTUS_DEVICE_NAME\":\"QEMU USB HARDDRIVE\"'"
+check "as a warning, so a filter on the level finds it" "sudo journalctl -t lotus -p warning..warning --no-pager | grep -q 'was blocked'"
+check "the status as JSON counts one blocked device" "t json 'd.armed and d.storage == \"block\" and d.strict and d.strictState == \"on\" and d.blocked == 1'"
 
 section "Strict mode: a new stick never runs"
 g "sudo dmesg -C"
@@ -334,6 +346,28 @@ check "a device that is not plugged in can be trusted in advance" "sudo lotus tr
 check_not "something that is not a vendor ID is refused" "sudo lotus trust vendor printer"
 check_not "half a model is refused" "sudo lotus trust model 46f4"
 check_not "the path of one function of a device is refused" "sudo lotus trust id 'USB\\VID_1234&PID_5678&MI_00\\X'"
+
+# ---------------------------------------------------------------- trust that ends
+
+section "Trust that ends by itself"
+check_not "a time that cannot be read is refused" "sudo lotus trust \"\$(t id $STICK2)\" --for 3x"
+check "and nothing was trusted" "t auth $STICK2 | grep -qx 0"
+check "the second stick is trusted for five minutes and comes on" "sudo lotus trust \"\$(t id $STICK2)\" --for 5m | grep -q 'is trusted until 20' && t wait-auth $STICK2 1 && t wait-block $STICK2"
+check "the list shows when the trust ends" "sudo lotus trusted | grep -A1 'QEMU USB HARDDRIVE' | grep $STICK2 | grep -q 'until 20'"
+check "the status as JSON counts one entry with an end" "t json 'd.trusted == 2 and d.trustedWithEnd == 1'"
+check "the first stick, trusted without an end, has none" "! sudo lotus trusted | grep $STICK1 | grep -q until"
+screen=$(ui "3 down e")
+if printf '%s' "$screen" | grep -q 'TRUST UNTIL' && printf '%s' "$screen" | grep -q 'Now: until 20'; then ok "the interface opens the form for the end with the time that is set"; else bad "the interface opens the form for the end with the time that is set" "$screen"; fi
+screen=$(ui "3 down e text:1m enter")
+if printf '%s' "$screen" | grep -q 'ends on 20' && printf '%s' "$screen" | grep -q 'UNTIL 20'; then ok "typing one minute into it shortens the trust"; else bad "typing one minute into it shortens the trust" "$screen"; fi
+check "the stick still works while the minute runs" "t auth $STICK2 | grep -qx 1"
+echo "    waiting for the minute to pass"
+check "when the minute is over the stick is switched off without anyone doing anything" "t wait-auth $STICK2 0 80 && t wait-no-block $STICK2"
+check "the entry is off the list and the other one is still there" "! sudo lotus trusted | grep -q $STICK2 && sudo lotus trusted | grep -q $STICK1 && t json 'd.trusted == 1 and d.trustedWithEnd == 0'"
+check "the log says the trust ended" "sudo lotus log 20 | grep -q 'TRUST_ENDED.*has ended'"
+check "the journal has it with the number 1101" "t journal trust_ended $STICK2 && t journal trust_ended '\"LOTUS_EVENT_ID\":\"1101\"'"
+check "the first stick was not touched" "t auth $STICK1 | grep -qx 1"
+check "an end can be given to an entry that is on the list, and taken away again" "sudo lotus trust \"\$(t id $STICK1)\" --until 2031-01-01 | grep -q 'now ends on 2031-01-01 23:59' && sudo lotus trust \"\$(t id $STICK1)\" --for never | grep -q 'has no end now' && ! sudo lotus trusted | grep -q until"
 
 # ---------------------------------------------------------------- other kinds
 
@@ -444,6 +478,44 @@ check "the trusted stick is on, with its disk" "t wait-auth $STICK1 1 20 && t wa
 check "keyboard and mouse work" "t auth $KBD | grep -qx 1 && t auth $MOUSE | grep -qx 1"
 check "the controllers are shut again" "[ \"\$(t defaults)\" = '0 ' ]"
 
+# ---------------------------------------------------------------- held back at the start
+
+section "The kernel holds devices back at the start"
+# With usbcore.authorized_default=2 the kernel switches on nothing that is
+# not built in, from its first moment. The daemon then has to do it. A stick
+# LOTUS has never seen is put in while the daemon is down, so that at the next
+# start nobody but the kernel has had a word about it.
+check "with strict mode switched off the controllers are open" "sudo lotus strict off >/dev/null && t wait-defaults 1"
+g "sudo systemctl stop lotus"
+plug s4 usb-storage 9 drive=disk3 serial=$STICK4
+check "a third stick is plugged in while the daemon is down, and runs" "t present $STICK4 && t wait-auth $STICK4 1"
+g "echo 'GRUB_CMDLINE_LINUX_DEFAULT=\"\$GRUB_CMDLINE_LINUX_DEFAULT usbcore.authorized_default=2\"' | sudo tee /etc/default/grub.d/99-lotus-test.cfg >/dev/null; sudo update-grub >/dev/null 2>&1"
+g "sudo systemctl reboot" 2>/dev/null
+sleep 8
+if wait_for_ssh 120; then ok "the machine is back"; else bad "the machine is back" "$(tail -n 20 "$work/console.log")"; fi
+check "the kernel runs with the setting" "grep -q 'usbcore.authorized_default=2' /proc/cmdline && [ \"\$(cat /sys/module/usbcore/parameters/authorized_default)\" = 2 ]"
+check "the kernel held the keyboard back, and LOTUS switched it on" "t wait-auth $KBD 1 30 && t held-at-start $KBD && t switched-on $KBD && t configured $KBD"
+check "the same for the mouse and for the trusted stick, which has its disk" "t wait-auth $MOUSE 1 && t wait-auth $STICK1 1 && t held-at-start $STICK1 && t wait-block $STICK1"
+check "the third stick, which the policy blocks, was held back and never switched on" "t present $STICK4 && t auth $STICK4 | grep -qx 0 && t held-at-start $STICK4 && ! t switched-on $STICK4 && t no-block $STICK4"
+check "LOTUS lists it as blocked" "sudo lotus devices | grep -B1 $STICK4 | grep -q 'BLOCKED.*Storage'"
+check "the stick and the adapter that were blocked before are still off" "t auth $STICK2 | grep -qx 0 && t auth $SERIAL | grep -qx 0 && ! t switched-on $STICK2 && ! t switched-on $SERIAL"
+check "strict mode is off, so the controllers are open again for what comes later" "[ \"\$(t defaults)\" = '1 ' ]"
+check "the log says the kernel held devices back" "sudo lotus log 60 | grep -q 'usbcore.authorized_default=2'"
+check "the status says so, as text and as JSON" "sudo lotus status | grep -q 'AT START *DEVICES WAIT FOR LOTUS' && t json 'd.heldAtStart and d.armed'"
+plug k2 usb-kbd 8 serial=$KBD2
+check "a keyboard plugged in afterwards works" "t wait-auth $KBD2 1 10 && t configured $KBD2"
+unplug k2
+
+check "strict mode is switched on again before the second restart" "sudo lotus strict on >/dev/null && t wait-defaults 0"
+g "sudo systemctl reboot" 2>/dev/null
+sleep 8
+if wait_for_ssh 120; then ok "the machine is back a second time, now with strict mode on"; else bad "the machine is back a second time, now with strict mode on" "$(tail -n 20 "$work/console.log")"; fi
+check "keyboard, mouse and the trusted stick are let in" "t wait-auth $KBD 1 30 && t wait-auth $MOUSE 1 && t wait-auth $STICK1 1 && t wait-block $STICK1"
+check "the blocked sticks and the adapter never ran" "t auth $STICK2 | grep -qx 0 && t auth $STICK4 | grep -qx 0 && t auth $SERIAL | grep -qx 0 && ! t switched-on $STICK2 && ! t switched-on $STICK4 && ! t switched-on $SERIAL"
+check "the controllers are shut, as strict mode has them" "[ \"\$(t defaults)\" = '0 ' ] && sudo lotus status | grep -q 'REFUSED BEFORE THEY START'"
+unplug s4
+g "sudo lotus untrust \"\$(t id $STICK4)\" --yes >/dev/null 2>&1; true"
+
 # ---------------------------------------------------------------- the store
 
 section "The policy store is damaged"
@@ -486,6 +558,8 @@ g "sudo lotus storage readonly >/dev/null; sudo lotus usb trusted --yes >/dev/nu
 check "armed with a blocked adapter and read-only disks" "t wait-auth $SERIAL 0 && t wait-ro $STICK1 1"
 remove_output=$(g "sudo lotus-uninstall" 2>&1)
 printf '%s\n' "$remove_output" | sed 's/^/    /'
+# The machine still starts with the kernel setting from the section above.
+if printf '%s' "$remove_output" | grep -q 'usbcore.authorized_default=2' && printf '%s' "$remove_output" | grep -q 'before you restart'; then ok "the uninstaller warns that the kernel setting would leave every device off"; else bad "the uninstaller warns that the kernel setting would leave every device off"; fi
 check "every device is on" "t wait-auth $SERIAL 1 && t all-on"
 check "the controllers are open" "[ \"\$(t defaults)\" = '1 ' ]"
 check "the disks are writable again" "t wait-ro $STICK1 0 && t wait-ro $STICK2 0"

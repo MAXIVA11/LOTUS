@@ -70,8 +70,15 @@ namespace Lotus.Linux
             return Path.Combine(root, controller, file);
         }
 
+        /// <summary>Runs before every look at the devices. The controller gate uses it to notice a controller that came later.</summary>
+        public Action BeforeScan;
+
+        /// <summary>The kernel names of the devices whose descriptors this backend has read while they were connected.</summary>
+        private readonly HashSet<string> hadDescriptors = new HashSet<string>(StringComparer.Ordinal);
+
         public List<UsbDevice> Scan()
         {
+            BeforeScan?.Invoke();
             var devices = new List<UsbDevice>();
             var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             HashSet<string> systemDevices = null;
@@ -101,7 +108,12 @@ namespace Lotus.Linux
                     devices.Add(device);
                 }
             }
-            lock (gate) kernelNames = names;
+            lock (gate)
+            {
+                kernelNames = names;
+                // A port that is empty now starts afresh with whatever is plugged in next.
+                hadDescriptors.RemoveWhere(name => !Directory.Exists(Path.Combine(root, name)));
+            }
             devices.Sort((a, b) => string.Compare(a.InstanceId, b.InstanceId, StringComparison.OrdinalIgnoreCase));
             return devices;
         }
@@ -227,7 +239,15 @@ namespace Lotus.Linux
             }
             device.InstanceId = Policy.NormalizeId(id);
 
-            ReadFunctions(dir, device);
+            bool described = ReadFunctions(dir, device);
+            lock (gate)
+            {
+                if (described) hadDescriptors.Add(name);
+                // The kernel takes the descriptors away a moment before the folder.
+                // A device that had them and has none now is on its way out. Judged
+                // without them, a keyboard would count as an unknown device.
+                else if (hadDescriptors.Contains(name)) return null;
+            }
 
             // "fixed" means the port is inside the computer: a laptop's webcam or keyboard.
             string removable = (ReadLine(Path.Combine(dir, "removable")) ?? "").Trim();
@@ -255,13 +275,15 @@ namespace Lotus.Linux
         /// first, then every configuration it offers. All configurations count,
         /// because a device can be switched to another one later.
         /// </summary>
-        private static void ReadFunctions(string dir, UsbDevice device)
+        /// <returns>True when the device's own descriptors could be read, false when only the class file was there, or nothing.</returns>
+        private static bool ReadFunctions(string dir, UsbDevice device)
         {
             byte[] raw = ReadBytes(Path.Combine(dir, "descriptors"));
             var interfaces = new List<UsbInterfaceInfo>();
             int deviceClass = -1;
             bool mediaTransfer = false;
-            if (raw != null && raw.Length >= 18 && raw[0] >= 18 && raw[1] == 1)
+            bool fromDescriptors = raw != null && raw.Length >= 18 && raw[0] >= 18 && raw[1] == 1;
+            if (fromDescriptors)
             {
                 deviceClass = raw[4];
                 int offset = raw[0];
@@ -317,6 +339,7 @@ namespace Lotus.Linux
             // Without descriptors nothing is known, and the policy treats the device accordingly.
             device.FunctionsKnown = functions.Count > 0;
             device.Described = functions.Count > 0;
+            return fromDescriptors;
         }
 
         /// <summary>

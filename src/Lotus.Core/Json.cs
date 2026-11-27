@@ -224,9 +224,18 @@ namespace Lotus.Core
             string token = s.Substring(start, i - start);
             if (!double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out double d))
             {
-                throw Error(s, start, "bad number '" + token + "'");
+                throw Error(s, start, "bad number '" + Short(token) + "'");
             }
+            // A number too large for a double is read as "infinity" by newer versions
+            // of .NET and refused by older ones. LOTUS refuses it everywhere: no
+            // setting is that large, and infinity cannot be written back as JSON.
+            if (double.IsInfinity(d) || double.IsNaN(d)) throw Error(s, start, "number out of range '" + Short(token) + "'");
             return d;
+        }
+
+        private static string Short(string token)
+        {
+            return token.Length <= 24 ? token : token.Substring(0, 24) + "...";
         }
 
         // ---------- writer ----------
@@ -248,10 +257,13 @@ namespace Lotus.Core
                     WriteString(sb, FormatTime(dt));
                     return;
                 case double d:
-                    sb.Append(d.ToString("R", CultureInfo.InvariantCulture));
+                    // JSON has no way to say "infinity" or "not a number".
+                    if (double.IsInfinity(d) || double.IsNaN(d)) sb.Append("null");
+                    else sb.Append(d.ToString("R", CultureInfo.InvariantCulture));
                     return;
                 case float f:
-                    sb.Append(f.ToString("R", CultureInfo.InvariantCulture));
+                    if (float.IsInfinity(f) || float.IsNaN(f)) sb.Append("null");
+                    else sb.Append(f.ToString("R", CultureInfo.InvariantCulture));
                     return;
                 case IFormattable n when value is int || value is long || value is short || value is byte ||
                                          value is uint || value is ulong || value is ushort || value is sbyte ||

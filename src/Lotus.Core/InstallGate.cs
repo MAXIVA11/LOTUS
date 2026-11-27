@@ -93,6 +93,15 @@ namespace Lotus.Core
         void Remove();
     }
 
+    /// <summary>A gate that found something worth a line in the log when the service started.</summary>
+    public interface IReportsAtStart
+    {
+        /// <summary>The line, or null when there is nothing to say.</summary>
+        string StartNote { get; }
+        /// <summary>True when the note is about something that went wrong.</summary>
+        bool StartNoteIsProblem { get; }
+    }
+
     /// <summary>A gate that is never there. Used where LOTUS must not touch Windows policy.</summary>
     public sealed class NoInstallGate : IInstallGate
     {

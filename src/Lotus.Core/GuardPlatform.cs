@@ -66,6 +66,12 @@ namespace Lotus.Core
         /// </summary>
         public abstract void PrepareFolders(Action<string> onError);
 
+        /// <summary>The system's own log, or null where there is none to write to.</summary>
+        public virtual ISystemLog CreateSystemLog()
+        {
+            return null;
+        }
+
         /// <summary>Tells the store how to keep its key on this system.</summary>
         public virtual void ConfigureStore(SecureStore store)
         {

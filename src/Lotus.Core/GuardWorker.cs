@@ -27,6 +27,13 @@ namespace Lotus.Core
         /// the request. Tests put their own answer in.
         /// </summary>
         public Func<bool> TakeResetRequest;
+        /// <summary>
+        /// Where a copy of every log line goes. Left empty, the installed service
+        /// uses the system's own log and everything else uses none.
+        /// </summary>
+        public ISystemLog SystemLog;
+        /// <summary>The time, for tests that let a trust entry run out.</summary>
+        public Func<DateTime> Clock;
     }
 
     /// <summary>
@@ -76,6 +83,7 @@ namespace Lotus.Core
         private string lastPassError;
         private string lastSystemDiskError;
         private string lastStatus;
+        private DateTime trustSweepNotBefore = DateTime.MinValue;
 
         /// <summary>
         /// Raised after setup asked over the control pipe for the service to stop.
@@ -150,6 +158,7 @@ namespace Lotus.Core
             try
             {
                 platform = options.Platform ?? GuardPlatform.Default();
+                log.Mirror = options.SystemLog ?? (options.HardenFolders ? platform.CreateSystemLog() : null);
                 PrepareFolders();
                 LoadStore();
 
@@ -176,6 +185,10 @@ namespace Lotus.Core
 
                 log.Write(EventTypes.GuardStarted, "LOTUS Guard " + LotusPaths.Version + " started." +
                                                    (notifications ? "" : " Device notifications are unavailable, so it checks every two seconds instead."));
+                if (installGate is IReportsAtStart reports && reports.StartNote != null)
+                {
+                    log.Write(reports.StartNoteIsProblem ? EventTypes.Error : EventTypes.PolicyChanged, reports.StartNote);
+                }
                 WriteStatus();
                 ready.Set();
 
@@ -272,6 +285,7 @@ namespace Lotus.Core
             try
             {
                 CheckStore();
+                EndTrustThatRanOut();
                 if (markAbsentDue)
                 {
                     markAbsentDue = false;
@@ -308,6 +322,45 @@ namespace Lotus.Core
                 ReportPassError(ex);
             }
             return clean;
+        }
+
+        /// <summary>
+        /// Takes entries off the trusted list whose time has run out, and says so
+        /// in the log. The pass that follows judges their devices like any other.
+        /// </summary>
+        private void EndTrustThatRanOut()
+        {
+            if (lockdown) return;
+            DateTime now = options.Clock != null ? options.Clock() : DateTime.UtcNow;
+            if (now < trustSweepNotBefore) return;
+            List<TrustEntry> over = policy.Trusted.FindAll(entry => entry.IsOver(now));
+            if (over.Count == 0) return;
+
+            Policy next = policy.Clone();
+            next.Trusted.RemoveAll(entry => entry.IsOver(now));
+            StoreContent previous = content;
+            content = new StoreContent { Policy = next, Serial = content.Serial };
+            if (!SaveStore())
+            {
+                // The entries already count for nothing. Try to tidy the list again in a minute.
+                content = previous;
+                trustSweepNotBefore = now + TimeSpan.FromMinutes(1);
+                return;
+            }
+            policy = next;
+            markAbsentDue = true;
+            foreach (TrustEntry entry in over)
+            {
+                log.Write(new LotusEvent
+                {
+                    Type = EventTypes.TrustEnded,
+                    DeviceId = entry.Kind == TrustKind.Device ? entry.Id : "",
+                    DeviceName = entry.Name ?? "",
+                    Message = "The trust for " + (string.IsNullOrEmpty(entry.Name) ? entry.Id : entry.Name) +
+                              " was given until " + Json.FormatTime(entry.UntilUtc ?? now) +
+                              " and has ended. The entry " + entry.Id + " is off the trusted list."
+                });
+            }
         }
 
         private void ReportPassError(Exception ex)

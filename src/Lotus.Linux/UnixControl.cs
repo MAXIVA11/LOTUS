@@ -206,6 +206,11 @@ namespace Lotus.Linux
                         ? "Only root can talk to the LOTUS daemon. Run this with sudo."
                         : "The LOTUS daemon is not answering. Is the service running?", ex);
             }
+            catch (ArgumentOutOfRangeException ex)
+            {
+                // Only reachable with --socket: the system limits a socket path to about a hundred characters.
+                throw new GuardUnavailableException("The path of the socket is too long for this system: " + path, ex);
+            }
             catch (IOException ex)
             {
                 throw new GuardUnavailableException("The connection to the LOTUS daemon broke off. " + ex.Message, ex);

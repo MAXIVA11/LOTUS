@@ -27,6 +27,7 @@ namespace Lotus.App
             DataContext = vm;
             InitializeComponent();
             ShowCustomHint();
+            ShowTermHint();
 
             OpenLogButton.Visibility = backend.LogFolder == null ? Visibility.Collapsed : Visibility.Visible;
             timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
@@ -247,6 +248,45 @@ namespace Lotus.App
             finally
             {
                 CustomAdd.IsEnabled = true;
+            }
+        }
+
+        // ---------- trust that ends ----------
+
+        private void ShowTermHint(string problem = null)
+        {
+            if (TermHint == null) return;
+            TermHint.Text = problem ?? MainViewModel.TermHint;
+            TermHint.Foreground = (System.Windows.Media.Brush)FindResource(problem == null ? "B.Dim" : "B.Pink");
+        }
+
+        private async void OnTrustTermKey(object sender, System.Windows.Input.KeyEventArgs e)
+        {
+            if (e.Key != System.Windows.Input.Key.Enter) return;
+            e.Handled = true;
+            var box = sender as System.Windows.Controls.TextBox;
+            if (!(box?.DataContext is TrustRow row)) return;
+            if (!TrustEntry.TryParseTerm(box.Text, DateTime.UtcNow, out DateTime? until, out string problem))
+            {
+                ShowTermHint(problem);
+                return;
+            }
+            ShowTermHint();
+            Policy next = vm.WithTerm(row.Kind, row.Id, until);
+            if (next == null)
+            {
+                // Nothing to change. Show the time the way LOTUS writes it.
+                box.Text = row.Until ?? "";
+                return;
+            }
+            box.IsEnabled = false;
+            try
+            {
+                await Save(next, false);
+            }
+            finally
+            {
+                box.IsEnabled = true;
             }
         }
 

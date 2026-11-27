@@ -16,16 +16,87 @@ namespace Lotus.Linux
     /// LOTUS can tell its own setting from one an administrator or another
     /// program made, and can put things back the way they were.
     /// </summary>
-    public sealed class LinuxUsbGate : IInstallGate
+    public sealed class LinuxUsbGate : IInstallGate, IReportsAtStart
     {
+        /// <summary>Where the kernel shows the setting it was started with: usbcore.authorized_default.</summary>
+        public const string KernelSetting = "/sys/module/usbcore/parameters/authorized_default";
+
         private readonly LinuxDeviceBackend backend;
         private readonly string savedPath;
+        private readonly string kernelSettingPath;
 
         /// <param name="savedPath">Where the earlier values are kept while LOTUS holds the controllers shut.</param>
-        public LinuxUsbGate(LinuxDeviceBackend backend, string savedPath)
+        /// <param name="kernelSettingPath">The kernel's own setting. Left empty, LOTUS never assumes the kernel held anything back.</param>
+        public LinuxUsbGate(LinuxDeviceBackend backend, string savedPath, string kernelSettingPath = null)
         {
             this.backend = backend ?? throw new ArgumentNullException(nameof(backend));
             this.savedPath = savedPath ?? throw new ArgumentNullException(nameof(savedPath));
+            this.kernelSettingPath = kernelSettingPath;
+        }
+
+        public string StartNote { get; private set; }
+        public bool StartNoteIsProblem { get; private set; }
+
+        /// <summary>
+        /// True when the kernel was started with usbcore.authorized_default=2. It
+        /// then switches on only the devices built into the computer and leaves
+        /// every other one waiting, from the first moment of the start. That
+        /// closes the time before the daemon runs, and it makes the daemon the
+        /// one who has to switch those devices on.
+        /// </summary>
+        public bool KernelHoldsAtStart => HoldsAtStart(kernelSettingPath);
+
+        public static bool HoldsAtStart(string kernelSettingPath)
+        {
+            try
+            {
+                return !string.IsNullOrEmpty(kernelSettingPath) && File.Exists(kernelSettingPath) &&
+                       File.ReadAllText(kernelSettingPath).Trim() == "2";
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Called when the daemon starts, and again before every look at the
+        /// devices, which costs a few small reads. Controllers the kernel left in
+        /// its waiting state become LOTUS's own: they are shut the way strict
+        /// mode shuts them, with "open" noted as the state to go back to. The
+        /// first pass then does the rest with what is there already. A waiting
+        /// device the policy blocks goes on the list of blocked devices without
+        /// ever having run. If the policy does not ask for strict mode, the
+        /// controllers are opened again and the devices that are still waiting
+        /// are switched on. If it does, they are let in one by one.
+        /// </summary>
+        public void TakeOverAtStart()
+        {
+            if (!KernelHoldsAtStart) return;
+            try
+            {
+                var waiting = new List<string>();
+                foreach (string controller in backend.Controllers())
+                {
+                    if (Read(controller) == "2") waiting.Add(controller);
+                }
+                if (waiting.Count == 0) return;
+                Dictionary<string, string> saved = ReadSaved();
+                foreach (string controller in waiting) saved[controller] = "1";
+                WriteSaved(saved);
+                foreach (string controller in waiting) Write(controller, "0");
+                if (StartNote == null)
+                {
+                    StartNote = "The kernel was started with usbcore.authorized_default=2 and held back every USB device " +
+                                "that is not built in. LOTUS decides about each of them now.";
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                StartNoteIsProblem = true;
+                StartNote = "The kernel held back USB devices at the start, and LOTUS could not take the controllers over. " +
+                            ex.Message + " Devices that are not built in may stay off.";
+            }
         }
 
         public bool Supported
@@ -83,7 +154,7 @@ namespace Lotus.Linux
             List<string> controllers = backend.Controllers();
             foreach (string controller in controllers)
             {
-                if (!saved.ContainsKey(controller)) saved[controller] = Read(controller) ?? "1";
+                if (!saved.ContainsKey(controller)) saved[controller] = Earlier(Read(controller));
             }
             // The note first, so that a stop halfway never leaves a shut controller nobody remembers.
             WriteSaved(saved);
@@ -101,12 +172,23 @@ namespace Lotus.Linux
             Dictionary<string, string> saved = ReadSaved();
             foreach (string controller in backend.Controllers())
             {
-                string before = saved.TryGetValue(controller, out string value) ? value : "1";
-                // LOTUS never leaves a controller shut that it shut itself.
-                if (before == "0") before = "1";
+                string before = Earlier(saved.TryGetValue(controller, out string value) ? value : "1");
                 Write(controller, before);
             }
             File.Delete(savedPath);
+        }
+
+        /// <summary>
+        /// The state a controller goes back to. LOTUS never leaves a controller
+        /// shut that it shut itself. And where the kernel holds devices back at
+        /// the start for LOTUS, the waiting state is not one to return to either:
+        /// nothing would switch on what is plugged in afterwards.
+        /// </summary>
+        private string Earlier(string value)
+        {
+            if (value == null || value == "0") return "1";
+            if (value == "2" && KernelHoldsAtStart) return "1";
+            return value;
         }
 
         private string Read(string controller)

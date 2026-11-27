@@ -22,3 +22,6 @@ __pycache__/
 
 # Scripts that draw the artwork. They stay on the author's computer.
 tools/
+
+# What the fuzzer writes when it finds something
+fuzz-findings/

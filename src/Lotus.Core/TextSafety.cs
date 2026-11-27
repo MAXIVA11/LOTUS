@@ -28,7 +28,7 @@ namespace Lotus.Core
                 if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
                 {
                     // Keep well-formed pairs (emoji and rare scripts) together.
-                    if (result.Length + 2 > maxLength) break;
+                    if (result.Length + 2 + (space && result.Length > 0 ? 1 : 0) > maxLength) break;
                     if (space && result.Length > 0) result.Append(' ');
                     space = false;
                     result.Append(c).Append(text[i + 1]);
@@ -49,7 +49,8 @@ namespace Lotus.Core
                 {
                     continue;
                 }
-                if (result.Length >= maxLength) break;
+                // The space that is owed counts too, or the result would be one longer than allowed.
+                if (result.Length + 1 + (space && result.Length > 0 ? 1 : 0) > maxLength) break;
                 if (space && result.Length > 0) result.Append(' ');
                 space = false;
                 result.Append(c);

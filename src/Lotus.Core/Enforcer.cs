@@ -683,7 +683,8 @@ namespace Lotus.Core
                 // in, without the moment it takes LOTUS to open the door.
                 foreach (TrustEntry entry in policy.Trusted)
                 {
-                    if (entry.Kind == TrustKind.Device) allow.Add(entry.Id);
+                    // An entry whose time is up opens no door, also in the moment before it is taken off the list.
+                    if (entry.Kind == TrustKind.Device && !entry.IsOver(now)) allow.Add(entry.Id);
                 }
                 // What was let through a moment ago may be between two states right now.
                 foreach (string id in new List<string>(admitted.Keys))

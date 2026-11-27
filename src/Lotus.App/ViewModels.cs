@@ -145,6 +145,9 @@ namespace Lotus.App
         public string Added { get; set; }
         public bool Connected { get; set; }
         public string ConnectedText => Connected ? "CONNECTED" : "NOT CONNECTED";
+        /// <summary>When the trust ends, as it is shown and typed: 2026-12-04 17:00. Empty for trust without an end.</summary>
+        public string Until { get; set; }
+        public string TermLabel => string.IsNullOrEmpty(Until) ? "NO END" : "ENDS";
     }
 
     /// <summary>One line in the activity list.</summary>
@@ -172,6 +175,7 @@ namespace Lotus.App
                 case EventTypes.Connected: row.TypeText = "PLUGGED IN"; row.TypeKey = "quiet"; break;
                 case EventTypes.Removed: row.TypeText = "UNPLUGGED"; row.TypeKey = "quiet"; break;
                 case EventTypes.PolicyChanged: row.TypeText = "POLICY"; row.TypeKey = "info"; break;
+                case EventTypes.TrustEnded: row.TypeText = "TRUST ENDED"; row.TypeKey = "warn"; break;
                 case EventTypes.ReadOnlyOn:
                 case EventTypes.ReadOnlyOff: row.TypeText = "READ-ONLY"; row.TypeKey = "info"; break;
                 case EventTypes.GuardStarted:
@@ -565,10 +569,11 @@ namespace Lotus.App
                     KindText = entry.Kind == TrustKind.Vendor ? "WHOLE VENDOR"
                         : entry.Kind == TrustKind.Model ? "WHOLE MODEL" : "THIS DEVICE",
                     Added = "added " + entry.AddedUtc.ToLocalTime().ToString("dd MMM yyyy", CultureInfo.InvariantCulture),
-                    Connected = lastDevices.Any(s => entry.Matches(s.Device))
+                    Connected = lastDevices.Any(s => entry.Matches(s.Device)),
+                    Until = entry.UntilText()
                 });
             }
-            string signature = string.Join("|", rows.Select(r => r.Kind + r.Id + r.Name + r.Connected));
+            string signature = string.Join("|", rows.Select(r => r.Kind + r.Id + r.Name + r.Connected + r.Until));
             if (signature == trustSignature) return;
             trustSignature = signature;
             Trusted.Clear();
@@ -711,6 +716,23 @@ namespace Lotus.App
             Policy next = live.Clone();
             return next.AddTrust(entry) ? next : null;
         }
+
+        /// <summary>
+        /// The current policy with a new end for one trust entry, or with the end
+        /// taken away. Null when nothing would change. Nothing is saved yet.
+        /// </summary>
+        public Policy WithTerm(TrustKind kind, string id, DateTime? untilUtc)
+        {
+            Policy next = live.Clone();
+            TrustEntry entry = next.Trusted.FirstOrDefault(e => e.Kind == kind && e.Id == id);
+            if (entry == null || entry.UntilUtc == untilUtc) return null;
+            entry.UntilUtc = untilUtc;
+            return next;
+        }
+
+        /// <summary>How to give trust an end, shown above the list.</summary>
+        public const string TermHint =
+            "To limit an entry, type how long it should last into its field and press Enter: 12h, 7d, 2w, or a date such as 2026-12-04. Clear the field for no end.";
 
         /// <summary>What to type for each kind of entry, shown under the field.</summary>
         public static string CustomTrustHint(TrustKind kind)

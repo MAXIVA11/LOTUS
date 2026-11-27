@@ -146,8 +146,11 @@ namespace Lotus.Guard
                     ["why"] = PolicyEngine.Explain(status.Decision, policy)
                 });
             }
+            DateTime? tamper = new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile).LastOf(EventTypes.Tamper);
             Console.WriteLine(Json.Write(new Dictionary<string, object>
             {
+                ["version"] = LotusPaths.Version,
+                ["lastTamper"] = tamper.HasValue ? Json.FormatTime(tamper.Value) : null,
                 ["policy"] = source == "Unknown"
                     ? "unknown, because LOTUS Guard is not answering."
                     : GuardWorker.Summarize(policy),

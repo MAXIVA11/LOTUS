@@ -498,7 +498,28 @@ namespace Lotus.Linux.Tui
             if ((c == 'x' || c == 'd' || key.Key == ConsoleKey.Delete) && live.Policy.Trusted.Count > 0)
             {
                 RemoveTrust(new List<TrustEntry> { live.Policy.Trusted[trustIndex] }, "");
+                return;
             }
+            if (c == 'e' && live.Policy.Trusted.Count > 0)
+            {
+                dialog = new TermDialog(this, live.Policy.Trusted[trustIndex]) { Unicode = unicode };
+            }
+        }
+
+        /// <summary>Called by the "trust until" form. Returns a problem to show, or null when the change is on its way.</summary>
+        internal string SetTerm(TrustEntry entry, string typed)
+        {
+            if (!TrustEntry.TryParseTerm(typed, DateTime.UtcNow, out DateTime? until, out string problem)) return problem;
+            if (live.Lockdown) return "LOTUS takes no changes while it is locked down.";
+            Policy next = live.Policy.Clone();
+            TrustEntry target = next.Trusted.FirstOrDefault(e => e.Kind == entry.Kind && e.Id == entry.Id);
+            if (target == null) return "That entry is not on the trusted list any more.";
+            target.UntilUtc = until;
+            string who = string.IsNullOrWhiteSpace(target.Name) ? target.Id : target.Name;
+            Send(next, until.HasValue
+                ? "The trust for " + who + " ends on " + target.UntilText() + "."
+                : "The trust for " + who + " has no end.", false);
+            return null;
         }
 
         /// <summary>Called by the "add by hand" form. Returns a problem to show, or null when the entry is on its way.</summary>
@@ -624,7 +645,7 @@ namespace Lotus.Linux.Tui
                 case TuiPage.Devices:
                     return G("↑↓ choose", "arrows choose") + "  t trust  m model  u untrust" + pages;
                 case TuiPage.Trusted:
-                    return G("↑↓ choose", "arrows choose") + "  n add by hand  x remove" + pages;
+                    return G("↑↓ choose", "arrows choose") + "  n add by hand  e end date  x remove" + pages;
                 case TuiPage.Activity:
                     return G("↑↓ scroll", "arrows scroll") + pages;
                 default:
@@ -943,8 +964,17 @@ namespace Lotus.Linux.Tui
                     Palette.Text, bg, true);
                 c.TextRight(w - 4, y, " " + KindLabel(entry.Kind) + " ", Palette.Ink, Palette.Cyan, true);
                 bool connected = live.Devices.Any(d => entry.Matches(d.Device));
-                c.Text(4, y + 1, Canvas.Shorten(entry.Id, w - 26, unicode), Palette.Dim, bg);
-                c.TextRight(w - 4, y + 1, connected ? "CONNECTED" : "NOT CONNECTED", connected ? Palette.Green : Palette.Dim, bg);
+                string status = connected ? "CONNECTED" : "NOT CONNECTED";
+                c.TextRight(w - 4, y + 1, status, connected ? Palette.Green : Palette.Dim, bg);
+                int room = w - 10 - status.Length;
+                if (entry.UntilUtc.HasValue)
+                {
+                    // Trust with an end says so, in the colour of things that need a second look.
+                    string until = entry.IsOver(DateTime.UtcNow) ? "ENDED" : "UNTIL " + entry.UntilText();
+                    c.TextRight(w - 6 - status.Length, y + 1, until, Palette.Yellow, bg, true);
+                    room -= until.Length + 2;
+                }
+                c.Text(4, y + 1, Canvas.Shorten(entry.Id, Math.Max(8, room), unicode), Palette.Dim, bg);
             }
             if (entries.Count > visible) c.TextRight(w - 4, top, (trustIndex + 1) + " of " + entries.Count, Palette.Dim);
         }
@@ -1156,6 +1186,70 @@ namespace Lotus.Linux.Tui
             int buttons = y + height - 2;
             Button(c, x + 3, buttons, ConfirmText, focus == ConfirmIndex, Danger ? Palette.Pink : Palette.Cyan);
             Button(c, x + 3 + ConfirmText.Length + 6, buttons, "CANCEL", focus == CancelIndex, Palette.Text);
+        }
+    }
+
+    /// <summary>The form that gives a trust entry an end, or takes the end away.</summary>
+    internal sealed class TermDialog : Dialog
+    {
+        private readonly TuiApp app;
+        private readonly TrustEntry entry;
+        private string typed = "";
+        private string problem;
+
+        public TermDialog(TuiApp app, TrustEntry entry)
+        {
+            this.app = app;
+            this.entry = entry;
+        }
+
+        public override string Keys => "type a time  enter set  esc cancel";
+
+        public override bool Key(ConsoleKeyInfo key)
+        {
+            switch (key.Key)
+            {
+                case ConsoleKey.Escape:
+                    return true;
+                case ConsoleKey.Backspace:
+                    if (typed.Length > 0) typed = typed.Substring(0, typed.Length - 1);
+                    problem = null;
+                    return false;
+                case ConsoleKey.Enter:
+                    problem = app.SetTerm(entry, typed);
+                    return problem == null;
+            }
+            char c = key.KeyChar;
+            if (c >= ' ' && c != 0x7F && typed.Length < 40)
+            {
+                typed += c;
+                problem = null;
+            }
+            return false;
+        }
+
+        public override void Render(Canvas c)
+        {
+            int width = Math.Min(c.Width - 6, 72), height = 13;
+            int x = (c.Width - width) / 2, y = Math.Max(1, (c.Height - height) / 2);
+            c.Box(x, y, width, height, Palette.Cyan, Palette.Panel, Unicode);
+            c.Text(x + 3, y + 1, "TRUST UNTIL", Palette.Cyan, -1, true);
+            string who = string.IsNullOrWhiteSpace(entry.Name) ? entry.Id : entry.Name;
+            c.Text(x + 3, y + 2, Canvas.Shorten(who, width - 6, Unicode), Palette.Text);
+            c.Text(x + 3, y + 3, entry.UntilUtc.HasValue ? "Now: until " + entry.UntilText() : "Now: no end", Palette.Dim);
+
+            string hint = "A length of time from now, such as 12h, 7d or 2w, or a date such as 2026-12-04 or " +
+                          "2026-12-04 17:00. Leave it empty for trust without an end.";
+            List<string> lines = Canvas.Wrap(problem ?? hint, width - 6);
+            for (int i = 0; i < lines.Count && i < 3; i++) c.Text(x + 3, y + 5 + i, lines[i], problem != null ? Palette.Pink : Palette.Dim);
+
+            int fieldX = x + 3, fieldWidth = width - 6;
+            c.Fill(fieldX, y + 9, fieldWidth, 1, Palette.Ink);
+            c.Text(fieldX + 1, y + 9, typed, Palette.Text, Palette.Ink);
+            c.Text(fieldX + 1 + typed.Length, y + 9, Unicode ? "▏" : "_", Palette.Cyan, Palette.Ink, true);
+
+            Button(c, x + 3, y + height - 2, "SET", true, Palette.Cyan);
+            c.Text(x + 3 + 9, y + height - 2, "esc cancels", Palette.Dim);
         }
     }
 

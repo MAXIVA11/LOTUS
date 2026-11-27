@@ -25,6 +25,8 @@ Files live in `C:\ProgramData\LOTUS`:
 
 Only the service can write to any of them. [security.md](security.md) describes the encrypted files.
 
+The service also writes every line of the activity log to the Windows event log, where log collectors can pick it up. [logging.md](logging.md) has the event numbers.
+
 ## What counts as one device
 
 LOTUS decides per physical device: the thing on one USB port. A headset with an audio interface and a button interface is one device. A hub is one device, and whatever is plugged into the hub is judged separately. The same goes for a Bluetooth adapter: the phones and keyboards paired with it sit on another bus and are not part of the adapter.
@@ -132,8 +134,11 @@ How LOTUS protects its own policy and service is described in [security.md](secu
 ## Command line
 
 ```
-LotusGuard --scan          List USB devices and what the current policy says about each.
-                           Asks the running service for the policy.
+LotusGuard --scan          List USB devices and what the current policy says about each,
+                           as JSON: the version, whether LOTUS is armed or locked down,
+                           when it was last tampered with, and every device with its state.
+                           Asks the running service for the policy. Monitoring tools can
+                           use it, or read status.json, which needs no rights.
 LotusGuard --console       Enforce the policy from a console window until Enter is pressed.
 LotusGuard --release-all   Disarm LOTUS, switch every blocked device back on, lift read-only
                            mode and remove the installation restrictions. Works without

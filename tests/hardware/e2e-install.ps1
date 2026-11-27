@@ -20,6 +20,7 @@
 #   - read-only mode, trust, disarm
 #   - what a new installation starts with, and trust entries added by hand
 #     for a vendor, a model and an instance path
+#   - trust that ends by itself, and the copy of the log in the Windows event log
 #   - an installation that puts the connected devices on the trusted list
 #   - the rescue command, with the service running and without it
 #   - a wrecked store locks LOTUS down, and running setup again resets it
@@ -77,6 +78,7 @@ $oldPassword = 'e2e test password 1'
 $newVersion = (((Get-Item $Setup).VersionInfo.FileVersion -split '\.')[0..1] -join '.') + '.*'
 $script:failed = 0
 $script:passed = 0
+$testStart = Get-Date
 
 Set-Content -Path $Log -Value "LOTUS end-to-end test $(Get-Date -Format s)" -Encoding utf8
 function Say($text) { Add-Content -Path $Log -Value $text -Encoding utf8 }
@@ -112,6 +114,10 @@ function Count-Events([string]$type, [string]$id = '') {
     return @(Get-Events | Where-Object { $_.type -eq $type -and (-not $id -or $_.id -eq $id) }).Count
 }
 function Get-Errors { return @(Get-Events | Where-Object { $_.type -eq 'error' }) }
+# What LOTUS wrote to the Windows event log since a point in time, under one event number.
+function Get-LogEntries([int]$id, [datetime]$since) {
+    return @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'LotusGuard'; Id = $id; StartTime = $since } -ErrorAction SilentlyContinue)
+}
 function Get-EventTime($e) {
     if ($e.t -is [DateTime]) { return $e.t.ToLocalTime() }
     return [DateTime]::Parse($e.t).ToLocalTime()
@@ -289,6 +295,10 @@ function Test-NothingLeft([string]$label) {
 
 # ---------- the setup window, driven through UI Automation ----------
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+Add-Type -Namespace LotusTest -Name Win -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool PostMessage(System.IntPtr hWnd, uint msg, System.IntPtr wParam, System.IntPtr lParam);
+'@
 function Get-SetupWindow($process) {
     # Windows PowerShell only reports the exit code later if the handle was opened early.
     $null = $process.Handle
@@ -614,6 +624,16 @@ try {
     $bad = @($scan.devices | Where-Object { $_.id -ne $Target -and ($_.problem -ne 0 -or $_.state -ne 'Trusted') })
     Check 'every other device still works and shows as trusted' ($bad.Count -eq 0) (($bad | ForEach-Object { "$($_.name)=$($_.state)/$($_.problem)" }) -join ', ')
     Check 'block was logged' ((Count-Events 'blocked' $Target) -ge 1)
+    $inLog = Wait-Until { @(Get-LogEntries 2100 $t0 | Where-Object { $_.Message -like "*$Target*" }).Count -ge 1 } 10
+    $entry = Get-LogEntries 2100 $t0 | Where-Object { $_.Message -like "*$Target*" } | Select-Object -First 1
+    Check 'the Windows event log has the block under number 2100' $inLog
+    Check 'as a warning, with text Windows can show' ($null -ne $entry -and $entry.LevelDisplayName -eq 'Warning' -and $entry.Message -like '*was blocked*' -and $entry.Message -notlike '*cannot be found*') "level=$($entry.LevelDisplayName) message=$($entry.Message)"
+    Check 'the start of the service is in the event log under number 1000' ((Get-LogEntries 1000 $testStart).Count -ge 1)
+    Check 'policy changes are in the event log under number 1100' ((Get-LogEntries 1100 $testStart).Count -ge 1)
+    Check 'the service registered itself as a source of the event log' ((Get-ItemProperty $eventLogKey -ErrorAction SilentlyContinue).EventMessageFile -like '*EventLogMessages.dll')
+    $everyLine = @(Get-Events | Where-Object { (Get-EventTime $_) -ge $t0 }).Count
+    $mirrored = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'LotusGuard'; StartTime = $t0 } -ErrorAction SilentlyContinue).Count
+    Say "   since arming: $everyLine lines in the activity log, $mirrored entries in the event log"
     Check 'Device Manager agrees it is off' ((Get-PnpDevice -InstanceId $Target -ErrorAction SilentlyContinue).Status -ne 'OK')
     Check 'the status file says armed' ((Read-Text $statusFile) -match '"armed": true')
     $readable = @(Get-ChildItem $secureDir -File | Where-Object { $_.Name -ne 'seal.key' -and -not (Test-Unreadable $_.FullName) })
@@ -663,6 +683,10 @@ try {
     catch { Say "   the change failed: $($_.Exception.Message)" }
     if ($edited) {
         Check 'a changed byte is logged as tampering' (Wait-Until { (Count-Events 'tamper') -ge 1 } 15)
+        $alarm = Get-LogEntries 4000 $testStart | Select-Object -First 1
+        Check 'the Windows event log has it as an error under number 4000' ($null -ne $alarm -and $alarm.LevelDisplayName -eq 'Error') "level=$($alarm.LevelDisplayName)"
+        $scan = Get-Scan
+        Check 'the scan names the version and when LOTUS was last tampered with' ($scan.version -like $newVersion -and $scan.lastTamper) "version=$($scan.version) lastTamper=$($scan.lastTamper)"
         Check 'the policy did not change' ((Get-Status).Armed -and (Get-Device $Target).state -eq 'Blocked')
     }
     $tampers = Count-Events 'tamper'
@@ -906,6 +930,37 @@ try {
     }
     $bad = $null; $problem = $null
     Check 'something that is not an ID is refused with a reason' (-not [Lotus.Core.TrustEntry]::TryParse([Lotus.Core.TrustKind]::Model, 'printer', $null, [ref]$bad, [ref]$problem) -and $problem)
+
+    Section 'G. trust that ends by itself'
+    $entry = $null; $problem = $null
+    [void][Lotus.Core.TrustEntry]::TryParse([Lotus.Core.TrustKind]::Device, $Target, 'e2e for a while', [ref]$entry, [ref]$problem)
+    $until = $null; $problem = $null
+    Check 'a length of time is read' ([Lotus.Core.TrustEntry]::TryParseTerm('7d', [DateTime]::UtcNow, [ref]$until, [ref]$problem) -and $null -ne $until) "problem=$problem"
+    Check 'something that is not a time is refused with a reason' (-not [Lotus.Core.TrustEntry]::TryParseTerm('next week', [DateTime]::UtcNow, [ref]$until, [ref]$problem) -and $problem)
+    $t0 = Get-Date
+    $ends = [DateTime]::UtcNow.AddSeconds(25)
+    $entry.UntilUtc = $ends
+    $with = $base.Clone()
+    [void]$with.AddTrust($entry)
+    $reply = Send-Policy $with
+    $works = $reply.Ok -and (Wait-Until { $d = Get-Device $Target; $d.problem -eq 0 -and $d.state -eq 'Trusted' } 20)
+    Check 'trusted for 25 seconds, the target is switched on' $works "code=$($reply.Code) state=$((Get-Device $Target).state)"
+    $kept = Get-Policy
+    $stored = @($kept.Trusted | Where-Object { $_.Id -eq $entry.Id })
+    Check 'the stored policy has the entry with its end' ($stored.Count -eq 1 -and $null -ne $stored[0].UntilUtc -and [Math]::Abs(($stored[0].UntilUtc - $ends).TotalSeconds) -lt 2) "until=$($stored[0].UntilUtc)"
+    Check 'the others on the list have no end' (@($kept.Trusted | Where-Object { $_.Id -ne $entry.Id -and $null -ne $_.UntilUtc }).Count -eq 0)
+    $off = Wait-Until { (Get-Device $Target).state -eq 'Blocked' } 45
+    $took = [int]((Get-Date) - $t0).TotalSeconds
+    Check 'when the time is up the target is blocked without anyone doing anything' $off "state=$((Get-Device $Target).state) after $took s"
+    Check 'and not before its time' ($took -ge 20) "after $took s"
+    $kept = Get-Policy
+    Check 'the entry is off the list and the others are still there' ($null -ne $kept -and @($kept.Trusted | Where-Object { $_.Id -eq $entry.Id }).Count -eq 0 -and $kept.Trusted.Count -eq $base.Trusted.Count) "trusted=$($kept.Trusted.Count) expected=$($base.Trusted.Count)"
+    Check 'the activity log says the trust ended' ((Count-Events 'trust_ended' $Target) -ge 1)
+    $ended = Get-LogEntries 1101 $t0 | Where-Object { $_.Message -like "*$Target*" } | Select-Object -First 1
+    Check 'the Windows event log has it under number 1101' ($null -ne $ended -and $ended.Message -like '*has ended*') "message=$($ended.Message)"
+    $raw = $with.ToJson() -replace '"until": "[^"]*"', '"until": "next week"'
+    $refused = (New-Guard).Apply($raw)
+    Check 'a policy whose end cannot be read is refused, and never taken as trust without an end' ($raw -like '*next week*' -and -not $refused.Ok -and (Get-Device $Target).state -eq 'Blocked') "code=$($refused.Code) $($refused.Message)"
     $reply = Send-Policy (New-Policy $false 'Allow' 'Block' $false @($Target))
     Check 'disarmed again, the target works' ($reply.Ok -and (Wait-Until { $d = Get-Device $Target; $d.problem -eq 0 -and $d.state -eq 'Allowed' } 20))
 
@@ -919,6 +974,38 @@ try {
     Check 'app is still running and responding' (-not $app.HasExited -and $app.Responding)
     $second = Start-Process -FilePath (Join-Path $installDir 'LOTUS.exe') -PassThru
     Check 'a second copy steps aside' ($second.WaitForExit(8000))
+
+    # The field on the Trusted page that gives an entry an end, against the real
+    # service. Enter is posted to the app's own window, so nothing is typed anywhere else.
+    try {
+        $main = [System.Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle)
+        (Find-Part $main 'NavTrusted').GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+        $shown = Wait-Until { $null -ne (Find-Part $main 'TrustUntil') } 10
+        Check 'the trusted page has a field for the end of every entry' $shown
+        if ($shown) {
+            $typeIn = {
+                param([string]$text)
+                $field = Find-Part $main 'TrustUntil'
+                $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($text)
+                $field.SetFocus()
+                Start-Sleep -Milliseconds 300
+                [void][LotusTest.Win]::PostMessage($app.MainWindowHandle, 0x0100, [IntPtr]0x0D, [IntPtr]0x001C0001)
+                [void][LotusTest.Win]::PostMessage($app.MainWindowHandle, 0x0101, [IntPtr]0x0D, [IntPtr]0xC01C0001)
+            }
+            & $typeIn '7d'
+            $limited = Wait-Until { @((Get-Policy).Trusted | Where-Object { $null -ne $_.UntilUtc }).Count -eq 1 } 10
+            $end = @((Get-Policy).Trusted | Where-Object { $null -ne $_.UntilUtc })
+            $days = if ($end.Count -eq 1) { ($end[0].UntilUtc - [DateTime]::UtcNow).TotalDays } else { 0 }
+            Check 'typing 7d into it and pressing Enter gives that entry an end a week away' ($limited -and $days -gt 6.9 -and $days -lt 7.1) "entries with an end=$($end.Count) days=$days"
+            Check 'the field then shows the date' (Wait-Until { (Find-Part $main 'TrustUntil').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value -match '^\d{4}-\d\d-\d\d \d\d:\d\d$' } 10)
+            & $typeIn 'next week'
+            Start-Sleep -Seconds 1
+            Check 'something that is not a time changes nothing and the page says why' ((Get-PartText $main 'TrustTermHint') -like 'Give a length of time*' -and @((Get-Policy).Trusted | Where-Object { $null -ne $_.UntilUtc }).Count -eq 1) "hint=$(Get-PartText $main 'TrustTermHint')"
+            & $typeIn ''
+            Check 'clearing the field takes the end away' (Wait-Until { @((Get-Policy).Trusted | Where-Object { $null -ne $_.UntilUtc }).Count -eq 0 } 10)
+        }
+    }
+    catch { Check 'the field for the end of trust could be driven' $false $_.Exception.Message }
     if (-not $app.HasExited) { $app.CloseMainWindow() | Out-Null; if (-not $app.WaitForExit(5000)) { $app.Kill() } }
 
     # ---------- I. the rescue command, lockdown ----------

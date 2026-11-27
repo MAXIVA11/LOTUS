@@ -250,6 +250,11 @@ namespace Lotus.App
             window.HideOverlay();
 
             Policy armed = vm.Finish(plan, true);
+            // One entry with an end, so the picture of the trusted list shows both kinds.
+            if (armed.Trusted.Count > 0)
+            {
+                armed.Trusted[0].UntilUtc = new DateTime(2027, 1, 15, 17, 0, 0, DateTimeKind.Local).ToUniversalTime();
+            }
             backend.SavePolicy(armed);
             vm.Accepted(armed, true);
 

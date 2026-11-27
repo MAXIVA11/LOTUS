@@ -88,6 +88,11 @@ namespace Lotus.Core
             }
         }
 
+        public override ISystemLog CreateSystemLog()
+        {
+            return new WindowsEventLog();
+        }
+
         public override void ConfigureStore(SecureStore store)
         {
             store.KeyFileSecurity = FolderGuard.KeyFileRules;

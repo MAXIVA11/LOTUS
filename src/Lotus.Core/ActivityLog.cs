@@ -10,6 +10,8 @@ namespace Lotus.Core
         public const string GuardStarted = "guard_started";
         public const string GuardStopped = "guard_stopped";
         public const string PolicyChanged = "policy_changed";
+        /// <summary>A trust entry reached the date it was given and was taken off the list.</summary>
+        public const string TrustEnded = "trust_ended";
         public const string Connected = "connected";
         public const string Removed = "removed";
         public const string Blocked = "blocked";
@@ -81,6 +83,9 @@ namespace Lotus.Core
 
         public string FilePath => path;
 
+        /// <summary>The system's own log, which gets a copy of every line. Empty in tests and in developer mode.</summary>
+        public ISystemLog Mirror;
+
         public void Write(LotusEvent e)
         {
             if (e == null) return;
@@ -101,6 +106,14 @@ namespace Lotus.Core
                 catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
                 {
                     // Logging must never stop enforcement.
+                }
+                try
+                {
+                    Mirror?.Write(e);
+                }
+                catch (Exception)
+                {
+                    // The same goes for the system's log, whatever it runs into.
                 }
             }
         }
@@ -140,6 +153,16 @@ namespace Lotus.Core
             if (events.Count > max) events.RemoveRange(0, events.Count - max);
             events.Reverse();
             return events;
+        }
+
+        /// <summary>When the newest event of one kind happened, or null when the log holds none.</summary>
+        public DateTime? LastOf(string type)
+        {
+            foreach (LotusEvent e in ReadRecent(int.MaxValue))
+            {
+                if (e.Type == type) return e.TimeUtc;
+            }
+            return null;
         }
 
         private static List<string> ReadLines(string file)

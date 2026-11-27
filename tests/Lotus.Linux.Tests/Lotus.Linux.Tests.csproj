@@ -19,9 +19,11 @@
     <Compile Include="..\Lotus.Tests\CustomTrustTests.cs" Link="Shared\CustomTrustTests.cs" />
     <Compile Include="..\Lotus.Tests\Devices.cs" Link="Shared\Devices.cs" />
     <Compile Include="..\Lotus.Tests\EnforcerTests.cs" Link="Shared\EnforcerTests.cs" />
+    <Compile Include="..\Lotus.Tests\FuzzFindingsTests.cs" Link="Shared\FuzzFindingsTests.cs" />
     <Compile Include="..\Lotus.Tests\JsonAndPolicyTests.cs" Link="Shared\JsonAndPolicyTests.cs" />
     <Compile Include="..\Lotus.Tests\SecurityTests.cs" Link="Shared\SecurityTests.cs" />
     <Compile Include="..\Lotus.Tests\StrictModeTests.cs" Link="Shared\StrictModeTests.cs" />
+    <Compile Include="..\Lotus.Tests\TrustTermTests.cs" Link="Shared\TrustTermTests.cs" />
     <Compile Include="..\Lotus.Tests\ViewAndSummaryTests.cs" Link="Shared\ViewAndSummaryTests.cs" />
   </ItemGroup>
 </Project>

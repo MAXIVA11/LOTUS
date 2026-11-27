@@ -420,6 +420,24 @@ namespace Lotus.Tests
         }
 
         [Fact]
+        public void An_entry_whose_time_is_up_names_no_exception_for_Windows()
+        {
+            Policy policy = TrustedOnly();
+            TrustEntry ended = TrustEntry.ForDevice(Headset());
+            ended.UntilUtc = now.AddMinutes(-1);
+            policy.AddTrust(ended);
+            TrustEntry running = TrustEntry.ForDevice(Devices.Stick());
+            running.UntilUtc = now.AddHours(1);
+            policy.AddTrust(running);
+
+            enforcer.RunOnce(policy);
+
+            Assert.True(gate.Owned);
+            Assert.False(gate.Allows(Devices.HeadsetId));
+            Assert.True(gate.Allows(Devices.StickId));
+        }
+
+        [Fact]
         public void A_function_that_arrives_on_its_own_is_let_in_when_its_device_is_allowed()
         {
             Policy policy = TrustedOnly();

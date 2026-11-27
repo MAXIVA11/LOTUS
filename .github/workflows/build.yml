@@ -5,9 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   windows:
     runs-on: windows-latest
+    permissions:
+      contents: read
+      # For the attestation: a signed statement that this file was built here, from this commit.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -25,8 +33,18 @@ jobs:
           path: dist/LOTUS-Setup.exe
           if-no-files-found: error
 
+      - name: Attest the installer
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/LOTUS-Setup.exe
+
   linux:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -42,6 +60,24 @@ jobs:
           name: LOTUS-linux-x64
           path: dist/lotus-*-linux-x64.tar.gz
           if-no-files-found: error
+
+      - name: Attest the archive
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/lotus-*-linux-x64.tar.gz
+
+      # Broken input for the parsers: what a device says about itself, the
+      # files of the policy store, the requests on the control channel.
+      - name: Fuzz the parsers
+        run: dotnet run -c Release --project tests/Lotus.Fuzz -- --seconds 120
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-findings
+          path: fuzz-findings
+          if-no-files-found: ignore
 
       # The second half runs LOTUS on a real kernel: an Ubuntu machine under
       # QEMU, with USB devices that QEMU emulates plugged in and pulled out.

@@ -1132,6 +1132,9 @@ namespace Lotus.Tests
         private readonly SimulatedInstallGate installGate = new SimulatedInstallGate();
         private GuardWorker worker;
         private readonly List<string> stops = new List<string>();
+        private readonly EventIdTests.Recorder systemLog = new EventIdTests.Recorder();
+        /// <summary>How far the service's clock runs ahead of the real one.</summary>
+        private TimeSpan ahead = TimeSpan.Zero;
 
         public GuardWorkerTests()
         {
@@ -1161,7 +1164,9 @@ namespace Lotus.Tests
                 AdministratorsOnly = false,
                 HardenFolders = false,
                 WatchDevices = false,
-                TakeResetRequest = () => setupAskedForReset
+                TakeResetRequest = () => setupAskedForReset,
+                SystemLog = systemLog,
+                Clock = () => DateTime.UtcNow + ahead
             });
             worker.StopRequested += purpose => { lock (stops) stops.Add(purpose); };
             worker.Start();
@@ -1230,6 +1235,93 @@ namespace Lotus.Tests
             });
             Assert.True(reply.Ok, reply.Message);
             Assert.False(reply.Data.ContainsKey("hasPassword"));
+        }
+
+        [Fact]
+        public void Trust_that_was_given_for_a_time_ends_by_itself_and_the_device_is_blocked()
+        {
+            bus.Plug(Devices.Stick());
+            GuardClient client = Start();
+            Policy policy = StorageBlocked();
+            TrustEntry entry = TrustEntry.ForDevice(Devices.Stick());
+            entry.UntilUtc = DateTime.UtcNow.AddHours(1);
+            policy.AddTrust(entry);
+            policy.AddTrust(TrustEntry.ForDevice(Devices.Headset()));
+            Assert.True(client.Apply(Json(policy)).Ok);
+            Thread.Sleep(400);
+            Assert.False(bus.Scan().Single().IsOff);
+            Assert.Equal(2, client.Read().ReadPolicy().Trusted.Count);
+
+            ahead = TimeSpan.FromHours(2);
+            worker.Kick();
+
+            Assert.True(Eventually(() => bus.Scan().Single().IsOff));
+            // The entry is off the list, the one without an end is not.
+            Policy now = client.Read().ReadPolicy();
+            Assert.Equal(Devices.HeadsetId, now.Trusted.Single().Id);
+            LotusEvent ended = Events().Single(e => e.Type == EventTypes.TrustEnded);
+            Assert.Equal(Devices.StickId, ended.DeviceId);
+            Assert.Contains("has ended", ended.Message);
+            Assert.Contains(Events(), e => e.Type == EventTypes.Blocked && e.DeviceId == Devices.StickId);
+        }
+
+        [Fact]
+        public void Trust_that_ended_stays_ended_after_the_service_starts_again()
+        {
+            bus.Plug(Devices.Stick());
+            GuardClient client = Start();
+            Policy policy = StorageBlocked();
+            TrustEntry entry = TrustEntry.ForDevice(Devices.Stick());
+            entry.UntilUtc = DateTime.UtcNow.AddHours(1);
+            policy.AddTrust(entry);
+            Assert.True(client.Apply(Json(policy)).Ok);
+            ahead = TimeSpan.FromHours(2);
+            worker.Kick();
+            Assert.True(Eventually(() => client.Read().ReadPolicy().Trusted.Count == 0));
+
+            ahead = TimeSpan.Zero;
+            client = Start();
+            Assert.Empty(client.Read().ReadPolicy().Trusted);
+            Assert.Single(Events(), e => e.Type == EventTypes.TrustEnded);
+        }
+
+        [Fact]
+        public void A_locked_down_service_leaves_the_list_alone()
+        {
+            GuardClient client = Start();
+            Policy policy = StorageBlocked();
+            TrustEntry entry = TrustEntry.ForDevice(Devices.Stick());
+            entry.UntilUtc = DateTime.UtcNow.AddHours(1);
+            policy.AddTrust(entry);
+            Assert.True(client.Apply(Json(policy)).Ok);
+            worker.Dispose();
+            worker = null;
+            File.WriteAllText(LotusPaths.StoreFile, "{ \"armed\": false }");
+            File.Delete(LotusPaths.StoreFile + ".bak");
+
+            ahead = TimeSpan.FromHours(2);
+            client = Start();
+            Assert.True(client.Status().Lockdown);
+            Thread.Sleep(500);
+            Assert.DoesNotContain(Events(), e => e.Type == EventTypes.TrustEnded);
+        }
+
+        [Fact]
+        public void Every_line_of_the_activity_log_reaches_the_systems_log_with_its_number()
+        {
+            bus.Plug(Devices.Stick());
+            GuardClient client = Start();
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
+            Assert.True(Eventually(() => bus.Scan().Single().IsOff));
+            Assert.True(Eventually(() => systemLog.Snapshot().Any(e => e.Type == EventTypes.Blocked)));
+
+            List<LotusEvent> mirrored = systemLog.Snapshot();
+            Assert.Equal(Events().Count, mirrored.Count);
+            Assert.Contains(mirrored, e => EventIds.For(e.Type) == EventIds.GuardStarted);
+            Assert.Contains(mirrored, e => EventIds.For(e.Type) == EventIds.PolicyChanged);
+            LotusEvent blocked = mirrored.Single(e => e.Type == EventTypes.Blocked);
+            Assert.Equal(Devices.StickId, blocked.DeviceId);
+            Assert.Equal(EventIds.Blocked, EventIds.For(blocked.Type));
         }
 
         [Fact]

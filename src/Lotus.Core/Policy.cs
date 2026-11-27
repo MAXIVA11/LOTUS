@@ -51,6 +51,113 @@ namespace Lotus.Core
         /// the entry was made without this information and covers any function.
         /// </summary>
         public List<string> Functions = new List<string>();
+        /// <summary>
+        /// When the trust ends, or null for trust without an end. From that moment
+        /// the entry counts for nothing, and the service takes it off the list.
+        /// </summary>
+        public DateTime? UntilUtc;
+
+        /// <summary>True once the time this entry was given has run out.</summary>
+        public bool IsOver(DateTime nowUtc)
+        {
+            return UntilUtc.HasValue && nowUtc >= UntilUtc.Value;
+        }
+
+        /// <summary>The end of the trust in local time, the way it is shown: 2026-12-04 17:00. Empty when there is none.</summary>
+        public string UntilText()
+        {
+            return UntilUtc.HasValue
+                ? UntilUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)
+                : "";
+        }
+
+        /// <summary>
+        /// Reads how long trust should last, as a person types it. A length of
+        /// time counts from now: 90m, 12h, 7d, 2w. A date means the end of that
+        /// day, 2026-12-04, and a date with a time means that minute, 2026-12-04
+        /// 17:00, both by this computer's clock. "never" or nothing means no end.
+        /// </summary>
+        public static bool TryParseTerm(string text, DateTime nowUtc, out DateTime? untilUtc, out string error)
+        {
+            untilUtc = null;
+            error = null;
+            string typed = (text ?? "").Trim().ToLowerInvariant();
+            if (typed.Length == 0 || typed == "never" || typed == "none" || typed == "no end") return true;
+            if (typed.Length > 40)
+            {
+                error = "That is too long to be a time.";
+                return false;
+            }
+
+            char unit = typed[typed.Length - 1];
+            string number = typed.Substring(0, typed.Length - 1).Trim();
+            if ((unit == 'm' || unit == 'h' || unit == 'd' || unit == 'w') && number.Length > 0 && number.Length <= 5 &&
+                IsDigits(number))
+            {
+                int amount = int.Parse(number, System.Globalization.CultureInfo.InvariantCulture);
+                TimeSpan span = unit == 'm' ? TimeSpan.FromMinutes(amount)
+                    : unit == 'h' ? TimeSpan.FromHours(amount)
+                    : unit == 'd' ? TimeSpan.FromDays(amount)
+                    : TimeSpan.FromDays(7.0 * amount);
+                if (amount == 0)
+                {
+                    error = "The time has to be longer than nothing.";
+                    return false;
+                }
+                if (span > MaxTerm)
+                {
+                    error = "Trust can be limited to ten years at most. Leave the time out for trust without an end.";
+                    return false;
+                }
+                untilUtc = Whole(nowUtc + span);
+                return true;
+            }
+
+            var culture = System.Globalization.CultureInfo.InvariantCulture;
+            DateTime local;
+            if (DateTime.TryParseExact(typed, new[] { "yyyy-MM-dd" }, culture,
+                    System.Globalization.DateTimeStyles.AssumeLocal, out local))
+            {
+                // A day without a time means the whole of that day.
+                local = local.Date.AddDays(1).AddSeconds(-1);
+            }
+            else if (!DateTime.TryParseExact(typed.Replace('t', ' '), new[] { "yyyy-MM-dd HH:mm", "yyyy-MM-dd H:mm" }, culture,
+                         System.Globalization.DateTimeStyles.AssumeLocal, out local))
+            {
+                error = "Give a length of time such as 12h, 7d or 2w, or a date such as 2026-12-04 or 2026-12-04 17:00.";
+                return false;
+            }
+            DateTime end = Whole(local.ToUniversalTime());
+            if (end <= nowUtc)
+            {
+                error = "That time has already passed.";
+                return false;
+            }
+            if (end - nowUtc > MaxTerm)
+            {
+                error = "Trust can be limited to ten years at most. Leave the time out for trust without an end.";
+                return false;
+            }
+            untilUtc = end;
+            return true;
+        }
+
+        private static readonly TimeSpan MaxTerm = TimeSpan.FromDays(3660);
+
+        private static bool IsDigits(string text)
+        {
+            foreach (char c in text)
+            {
+                if (c < '0' || c > '9') return false;
+            }
+            return true;
+        }
+
+        /// <summary>The policy keeps times to the second.</summary>
+        private static DateTime Whole(DateTime time)
+        {
+            return new DateTime(time.Ticks - time.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
+        }
 
         public bool Matches(UsbDevice device)
         {
@@ -288,8 +395,11 @@ namespace Lotus.Core
         public TrustEntry FindTrust(UsbDevice device, out TrustEntry outgrown)
         {
             outgrown = null;
+            DateTime now = DateTime.UtcNow;
             foreach (TrustEntry entry in Trusted)
             {
+                // An entry whose time has run out counts for nothing, even before the service has removed it.
+                if (entry.IsOver(now)) continue;
                 if (!entry.Matches(device)) continue;
                 if (entry.Covers(device)) return entry;
                 outgrown = entry;
@@ -366,7 +476,8 @@ namespace Lotus.Core
                     Id = entry.Id,
                     Name = entry.Name,
                     AddedUtc = entry.AddedUtc,
-                    Functions = new List<string>(entry.Functions)
+                    Functions = new List<string>(entry.Functions),
+                    UntilUtc = entry.UntilUtc
                 });
             }
             return copy;
@@ -379,14 +490,16 @@ namespace Lotus.Core
             var trusted = new List<object>();
             foreach (TrustEntry entry in Trusted)
             {
-                trusted.Add(new Dictionary<string, object>
+                var item = new Dictionary<string, object>
                 {
                     ["kind"] = TrustEntry.KindToText(entry.Kind),
                     ["id"] = entry.Id,
                     ["name"] = entry.Name ?? "",
                     ["added"] = Json.FormatTime(entry.AddedUtc),
                     ["functions"] = new List<object>(entry.Functions)
-                });
+                };
+                if (entry.UntilUtc.HasValue) item["until"] = Json.FormatTime(entry.UntilUtc.Value);
+                trusted.Add(item);
             }
             var root = new Dictionary<string, object>
             {
@@ -458,6 +571,16 @@ namespace Lotus.Core
                     Name = TextSafety.Clean(Json.GetString(obj, "name", "")),
                     AddedUtc = Json.ParseTime(Json.GetString(obj, "added", null), DateTime.UtcNow)
                 };
+                if (obj.TryGetValue("until", out object until) && until != null)
+                {
+                    // An end that cannot be read must not turn into trust without an end.
+                    DateTime end = Json.ParseTime(until as string, DateTime.MinValue);
+                    if (end == DateTime.MinValue)
+                    {
+                        throw new FormatException("The end of the trust for \"" + id + "\" is not a time.");
+                    }
+                    entry.UntilUtc = end;
+                }
                 foreach (object function in Json.GetList(obj, "functions"))
                 {
                     if (function is string code && code.Length > 0 && code.Length <= 8 &&

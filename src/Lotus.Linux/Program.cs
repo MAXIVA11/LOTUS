@@ -22,6 +22,8 @@ namespace Lotus.Linux
         private static bool dev;
         private static bool yes;
         private static string entryName;
+        /// <summary>What followed --for or --until: how long the trust being given should last.</summary>
+        private static string termText;
 
         private static int Main(string[] args)
         {
@@ -45,6 +47,10 @@ namespace Lotus.Linux
                     case "--yes":
                     case "-y": yes = true; break;
                     case "--name" when i + 1 < args.Length: entryName = args[++i]; break;
+                    case "--for" when i + 1 < args.Length:
+                    case "--until" when i + 1 < args.Length:
+                        termText = args[++i];
+                        break;
                     default: rest.Add(args[i]); break;
                 }
             }
@@ -59,7 +65,7 @@ namespace Lotus.Linux
                 {
                     case "daemon": return RunDaemon();
                     case "ui": return RunUi(rest, atTerminal);
-                    case "status": return Status();
+                    case "status": return rest.Contains("--json") ? StatusJson() : Status();
                     case "devices": return Devices();
                     case "arm": return Change(p => p.Armed = true, "LOTUS is armed.");
                     case "disarm": return Change(p => p.Armed = false, "LOTUS is disarmed. Nothing is blocked.");
@@ -291,6 +297,11 @@ namespace Lotus.Linux
                 state.Policy.Pnp == PnpMode.Block ? Ui.Pink : Ui.Green);
             Ui.Line("KEYBOARDS AND MICE", state.Policy.AllowInput ? "ALWAYS WORK" : "NEED TRUST", Ui.Text);
             Ui.Line("NEW DEVICES", StrictText(state), Ui.Text);
+            if (KernelHoldsAtStart())
+            {
+                // The kernel was started with usbcore.authorized_default=2.
+                Ui.Line("AT START", "DEVICES WAIT FOR LOTUS", Ui.Text);
+            }
             Ui.Line("TRUSTED", state.Policy.Trusted.Count.ToString(), Ui.Cyan);
             int blocked = state.Devices.Count(d => d.State == DeviceState.Blocked || d.State == DeviceState.Blocking);
             Ui.Line("CONNECTED", state.Devices.Count + (blocked > 0 ? "   BLOCKED " + blocked : ""), blocked > 0 ? Ui.Pink : Ui.Text);
@@ -304,6 +315,55 @@ namespace Lotus.Linux
                 Ui.Note("Run \"lotus\" on its own for the interactive interface.");
             }
             return 0;
+        }
+
+        /// <summary>
+        /// The status as one JSON object, for monitoring and compliance tools.
+        /// The field names stay the same from version to version. The exit code
+        /// is 0 when the daemon answers and 1 when it does not, and in both cases
+        /// what is printed is JSON.
+        /// </summary>
+        private static int StatusJson()
+        {
+            var report = new Dictionary<string, object> { ["version"] = LotusPaths.Version };
+            State state;
+            try
+            {
+                state = Read();
+            }
+            catch (Exception ex) when (ex is GuardUnavailableException || ex is FormatException)
+            {
+                report["running"] = false;
+                report["error"] = ex.Message;
+                Console.WriteLine(Json.Write(report));
+                return 1;
+            }
+            LotusPaths.OverrideDataDir(stateDir);
+            DateTime? tamper = new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile).LastOf(EventTypes.Tamper);
+            DateTime now = DateTime.UtcNow;
+            report["running"] = true;
+            report["armed"] = state.Policy.Armed;
+            report["lockdown"] = state.Lockdown;
+            report["storage"] = state.Policy.Storage == StorageMode.Block ? "block"
+                : state.Policy.Storage == StorageMode.ReadOnly ? "readonly" : "allow";
+            report["usb"] = state.Policy.Pnp == PnpMode.Block ? "block" : "allow";
+            report["keepInput"] = state.Policy.AllowInput;
+            report["strict"] = state.Policy.Strict;
+            report["strictState"] = state.Strict;
+            report["trusted"] = state.Policy.Trusted.Count(entry => !entry.IsOver(now));
+            report["trustedWithEnd"] = state.Policy.Trusted.Count(entry => entry.UntilUtc.HasValue && !entry.IsOver(now));
+            report["connected"] = state.Devices.Count;
+            report["blocked"] = state.Devices.Count(d => d.State == DeviceState.Blocked || d.State == DeviceState.Blocking);
+            report["lastTamper"] = tamper.HasValue ? Json.FormatTime(tamper.Value) : null;
+            report["heldAtStart"] = KernelHoldsAtStart();
+            Console.WriteLine(Json.Write(report));
+            return 0;
+        }
+
+        /// <summary>True when the kernel holds back devices that are not built in until the daemon has looked at them.</summary>
+        private static bool KernelHoldsAtStart()
+        {
+            return sysfsRoot == LinuxDeviceBackend.DefaultRoot && LinuxUsbGate.HoldsAtStart(LinuxUsbGate.KernelSetting);
         }
 
         private static string StrictText(State state)
@@ -540,6 +600,11 @@ namespace Lotus.Linux
         /// </summary>
         private static int Trust(List<string> rest)
         {
+            if (termText != null && !TrustEntry.TryParseTerm(termText, DateTime.UtcNow, out DateTime? _, out string problem))
+            {
+                Ui.Error(problem);
+                return 2;
+            }
             string first = Argument(rest, 1);
             switch ((first ?? "").ToLowerInvariant())
             {
@@ -571,18 +636,59 @@ namespace Lotus.Linux
                 }
             }
             Policy next = state.Policy.Clone();
-            if (!next.AddTrust(entry))
+            string what = kind == TrustKind.Vendor ? "Every device from vendor " + entry.Id.Substring(4)
+                : kind == TrustKind.Model ? "Every " + entry.Id
+                : entry.Id;
+            switch (AddWithTerm(next, entry))
             {
-                Ui.Note("That is on the trusted list already.");
-                return 0;
+                case Added.Nothing:
+                    Ui.Note("That is on the trusted list already.");
+                    return 0;
+                case Added.NewEnd:
+                    return Apply(next, EndSentence(what, entry));
             }
             if (kind == TrustKind.Vendor)
             {
                 Ui.Note("This covers every device that vendor makes, also ones you have never seen.");
             }
-            return Apply(next, kind == TrustKind.Vendor ? "Every device from vendor " + entry.Id.Substring(4) + " is trusted."
-                : kind == TrustKind.Model ? "Every " + entry.Id + " is trusted."
-                : entry.Id + " is trusted.");
+            return Apply(next, what + " is trusted" + UntilWords(entry) + ".");
+        }
+
+        private enum Added
+        {
+            Nothing,
+            Entry,
+            NewEnd
+        }
+
+        /// <summary>
+        /// Puts the entry on the list with the end that --for or --until asked
+        /// for. An entry that is on the list already gets the new end, when one
+        /// was given: that is how trust is made longer, shorter or endless.
+        /// </summary>
+        private static Added AddWithTerm(Policy next, TrustEntry entry)
+        {
+            DateTime? until = null;
+            if (termText != null) TrustEntry.TryParseTerm(termText, DateTime.UtcNow, out until, out _);
+            entry.UntilUtc = until;
+            if (next.AddTrust(entry)) return Added.Entry;
+            if (termText == null) return Added.Nothing;
+            TrustEntry existing = next.Trusted.First(e => e.Kind == entry.Kind && e.Id == entry.Id);
+            if (existing.UntilUtc == until) return Added.Nothing;
+            existing.UntilUtc = until;
+            return Added.NewEnd;
+        }
+
+        private static string UntilWords(TrustEntry entry)
+        {
+            return entry.UntilUtc.HasValue ? " until " + entry.UntilText() : "";
+        }
+
+        private static string EndSentence(string what, TrustEntry entry)
+        {
+            return entry.UntilUtc.HasValue
+                ? "The trust for " + what + " now ends on " + entry.UntilText() + "."
+                : "The trust for " + what + " has no end now.";
         }
 
         private static int TrustConnected()
@@ -590,6 +696,9 @@ namespace Lotus.Linux
             State state = Read();
             Policy next = state.Policy.Clone();
             List<TrustEntry> added = next.TrustAll(state.Devices.Select(d => d.Device));
+            DateTime? until = null;
+            if (termText != null) TrustEntry.TryParseTerm(termText, DateTime.UtcNow, out until, out _);
+            foreach (TrustEntry entry in added) entry.UntilUtc = until;
             if (added.Count == 0)
             {
                 Ui.Note(state.Devices.Count == 0
@@ -602,9 +711,10 @@ namespace Lotus.Linux
                 Console.WriteLine("     " + Ui.Paint(Shorten(entry.Name, 40).PadRight(40), Ui.Text) + "  " +
                                   Ui.Paint(KindText(entry.Kind), Ui.Dim));
             }
+            string end = until.HasValue ? " until " + added[0].UntilText() : "";
             return Apply(next, added.Count == 1
-                ? "One connected device is trusted."
-                : added.Count + " connected devices are trusted.");
+                ? "One connected device is trusted" + end + "."
+                : added.Count + " connected devices are trusted" + end + ".");
         }
 
         private static string KindText(TrustKind kind)
@@ -627,7 +737,8 @@ namespace Lotus.Linux
                 Console.WriteLine("  " + Ui.Paint(KindText(entry.Kind).ToUpperInvariant().PadRight(12), Ui.Cyan) + "  " +
                                   Ui.Paint(Shorten(string.IsNullOrWhiteSpace(entry.Name) ? "Unnamed device" : entry.Name, 44), Ui.Text) +
                                   (connected ? Ui.Paint("  connected", Ui.Dim) : ""));
-                Console.WriteLine("  " + "".PadRight(14) + Ui.Paint(entry.Id, Ui.Dim));
+                Console.WriteLine("  " + "".PadRight(14) + Ui.Paint(entry.Id, Ui.Dim) +
+                                  (entry.UntilUtc.HasValue ? "  " + Ui.Paint("until " + entry.UntilText(), Ui.Yellow) : ""));
             }
             Console.WriteLine();
             Ui.Note("Take one off the list with its ID: lotus untrust <id>");
@@ -645,18 +756,21 @@ namespace Lotus.Linux
                 return 2;
             }
             Policy next = state.Policy.Clone();
-            if (!next.AddTrust(model ? TrustEntry.ForModel(device) : TrustEntry.ForDevice(device)))
+            TrustEntry entry = model ? TrustEntry.ForModel(device) : TrustEntry.ForDevice(device);
+            string what = model ? "Every " + device.Name + " (" + device.ModelId + ")" : device.Name;
+            switch (AddWithTerm(next, entry))
             {
-                Ui.Note(device.Name + " is on the trusted list already.");
-                return 0;
+                case Added.Nothing:
+                    Ui.Note(device.Name + " is on the trusted list already.");
+                    return 0;
+                case Added.NewEnd:
+                    return Apply(next, EndSentence(what, entry));
             }
             if (!model && !device.HasSerial)
             {
                 Ui.Note("This device has no serial number, so the trust holds for the port it is in now.");
             }
-            return Apply(next, model
-                ? "Every " + device.Name + " (" + device.ModelId + ") is trusted."
-                : device.Name + " is trusted.");
+            return Apply(next, what + " is trusted" + UntilWords(entry) + ".");
         }
 
         private static int Untrust(string which)
@@ -726,6 +840,7 @@ namespace Lotus.Linux
                                   app in your terminal, driven with the keyboard.
 
   lotus status                    What is in force right now.
+  lotus status --json             The same as one JSON object, for monitoring tools.
   lotus devices                   The connected USB devices and what the policy says about each.
   lotus log [lines]               The activity log.
 
@@ -743,6 +858,11 @@ namespace Lotus.Linux
   lotus trust vendor <vid>        Trust by hand, for a device that need not be plugged in:
   lotus trust model <vid:pid>     every device of a vendor (046D), every unit of a model
   lotus trust id <instance path>  (046D:C52B), or one device by its path. --name ""..."" names it.
+  lotus trust ... --for 7d        Trust that ends by itself: 90m, 12h, 7d, 2w from now, or
+  lotus trust ... --until 2026-12-04
+                                  on a date, with a time if you like (""2026-12-04 17:00"").
+                                  Given for an entry that is on the list, it changes the
+                                  end. ""--for never"" takes the end away.
   lotus trusted                   The trusted list.
   lotus untrust <number|id>       Take a device, a model or a vendor off the trusted list.
 
