@@ -4,7 +4,7 @@ What changed in each version of LOTUS, newest first. The [releases page](https:/
 
 Version numbers follow [semantic versioning](https://semver.org): the last number is for fixes, the middle one for additions that keep everything working, the first for a change that needs something from you when you update.
 
-## 1.6.0, not released yet
+## 1.6.0, 2026-11-27
 
 ### Added
 

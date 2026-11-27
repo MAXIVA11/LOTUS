@@ -427,7 +427,7 @@ try {
         Check 'the 1.0 policy was taken over: armed, same trusted list' ($null -ne $now -and $now.Armed -and $now.Trusted.Count -eq $entries.Count) "trusted=$($now.Trusted.Count)"
         Check 'the readable policy file is gone' (Wait-Until { -not (Test-Path $legacyFile) } 10)
         Check 'the readable list of blocked devices is gone' (Wait-Until { (Test-Path $ledgerFile) -and -not (Test-Path $legacyLedger) } 15)
-        Check 'the old event log registration is gone' (-not (Test-Path $eventLogKey))
+        Check 'the new service is registered as a source of the Windows event log' (Wait-Until { Test-Path $eventLogKey } 10)
         Check 'the target stayed switched off through the update' ((Get-PnpDevice -InstanceId $Target).Status -ne 'OK')
         Check 'the new version shows the target as blocked' (Wait-Until { (Get-Device $Target).state -eq 'Blocked' } 15) "state=$((Get-Device $Target).state)"
         Check 'the target was not blocked a second time' ((Count-Events 'blocked' $Target) -eq 1) "blocked events=$(Count-Events 'blocked' $Target)"
@@ -523,16 +523,24 @@ try {
     foreach ($f in 'LOTUS.exe', 'LotusGuard.exe', 'Lotus.Core.dll', 'Uninstall.exe', 'LICENSE.txt', 'LOTUS Notifier.lnk', 'setup.log') {
         Check "installed file $f" (Test-Path (Join-Path $installDir $f))
     }
-    $built = @{
-        'LOTUS.exe'      = Join-Path $PSScriptRoot '..\..\src\Lotus.App\bin\Release\LOTUS.exe'
-        'Lotus.Core.dll' = Join-Path $PSScriptRoot '..\..\src\Lotus.App\bin\Release\Lotus.Core.dll'
-        'LotusGuard.exe' = Join-Path $PSScriptRoot '..\..\src\Lotus.Guard\bin\Release\LotusGuard.exe'
+    # What setup put on the disk is what it carries: every file of its payload, byte for byte.
+    # The comparison is with the installer under test, which need not be the one built here.
+    try {
+        Add-Type -AssemblyName System.IO.Compression
+        $carried = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($Setup))
+        $payload = New-Object IO.Compression.ZipArchive($carried.GetManifestResourceStream('payload.zip'))
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        foreach ($item in $payload.Entries) {
+            $buffer = New-Object IO.MemoryStream
+            $stream = $item.Open(); $stream.CopyTo($buffer); $stream.Dispose()
+            $expected = [BitConverter]::ToString($hasher.ComputeHash($buffer.ToArray())).Replace('-', '')
+            $placed = Join-Path $installDir $item.FullName
+            $same = (Test-Path $placed) -and ((Get-FileHash $placed -Algorithm SHA256).Hash -eq $expected)
+            Check "installed $($item.FullName) is the one the installer carries" $same
+        }
+        Check 'the installer carries the app, the service and the shared library' (@($payload.Entries | Where-Object { $_.FullName -in 'LOTUS.exe', 'LotusGuard.exe', 'Lotus.Core.dll' }).Count -eq 3)
     }
-    foreach ($f in $built.Keys) {
-        if (-not (Test-Path $built[$f])) { Say "   no build output to compare $f with"; continue }
-        $same = (Get-FileHash (Join-Path $installDir $f) -Algorithm SHA256).Hash -eq (Get-FileHash $built[$f] -Algorithm SHA256).Hash
-        Check "installed $f is the freshly built one" $same
-    }
+    catch { Check 'the payload of the installer could be read' $false $_.Exception.Message }
     Check 'uninstaller is a copy of setup' ((Get-FileHash (Join-Path $installDir 'Uninstall.exe') -Algorithm SHA256).Hash -eq (Get-FileHash $Setup -Algorithm SHA256).Hash)
     $svc = Get-ServiceInfo
     Check 'service is running' ($svc.State -eq 'Running') "state=$($svc.State)"
@@ -546,7 +554,7 @@ try {
     $un = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\LOTUS' -ErrorAction SilentlyContinue
     Check 'listed in installed apps with the new version' ($un.DisplayName -eq 'LOTUS' -and $un.DisplayVersion -like $newVersion -and $un.UninstallString -like '*Uninstall.exe" /uninstall')
     Check 'no setup log in TEMP' (-not (Test-Path (Join-Path $env:TEMP 'LOTUS-Setup.log')))
-    Check 'no event log registration' (-not (Test-Path $eventLogKey))
+    Check 'the service registered itself as a source of the Windows event log' (Wait-Until { Test-Path $eventLogKey } 10)
     Check 'guard logged its start' (Wait-Until { (Count-Events 'guard_started') -ge 1 } 10)
     if ($code -ne 0 -or $svc.State -ne 'Running') {
         Say-SetupLog
