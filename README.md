@@ -109,7 +109,7 @@ Check 05 has two exceptions. A device that Windows reports as built into the com
 
 The disabled state belongs to that device, and Windows remembers it. A blocked drive stays off when it is unplugged and plugged back in, after a restart, and while the service is stopped. Devices this PC has seen before, and that the policy blocks, are marked as disabled while they are unplugged, so they are already off when they come back.
 
-A device this PC has never seen has no record to mark. For those, LOTUS uses the device installation restrictions that are part of Windows: while LOTUS is armed, Windows refuses to install any USB device the policy blocks, so such a device never starts. This is the "Refuse new devices before they start" switch, which is on by default. A new device the policy allows, such as a new keyboard, is let through by LOTUS and works about a second later.
+A device this PC has never seen has no record to mark. For those, LOTUS uses the device installation restrictions that are part of Windows: while LOTUS is armed, Windows refuses to install any USB device the policy blocks, so such a device never starts. This is the "Refuse new devices before they start" switch, which is on by default. A new device the policy allows, such as a new keyboard, is let through by LOTUS and works a fraction of a second later.
 
 Sometimes Windows refuses to stop a device because a program has it open, typically Explorer reading a drive that was just plugged in. LOTUS then takes the device off the bus by resetting its USB port, which no program can refuse.
 
