@@ -14,7 +14,7 @@ namespace Lotus.Core
     /// The service's end of the control pipe. It serves one request at a time:
     /// read one line of JSON, hand it to the handler, write one line back.
     /// </summary>
-    public sealed class GuardPipeServer : IDisposable
+    public sealed class GuardPipeServer : IControlServer
     {
         private const uint PIPE_ACCESS_DUPLEX = 0x3;
         private const uint FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000;

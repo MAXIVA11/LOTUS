@@ -4,41 +4,6 @@ using Lotus.Core.Native;
 
 namespace Lotus.Core
 {
-    public sealed class DeviceOpResult
-    {
-        public bool Ok;
-        /// <summary>Windows has no record of the device any more, so there is nothing left to do.</summary>
-        public bool Gone;
-        /// <summary>Windows does not allow this device to be disabled. Keyboards are the usual case.</summary>
-        public bool NotDisableable;
-        /// <summary>A program had the device open, so Windows refused to stop it for now.</summary>
-        public bool Vetoed;
-        public string Message = "";
-
-        public static DeviceOpResult Success()
-        {
-            return new DeviceOpResult { Ok = true };
-        }
-
-        public static DeviceOpResult Fail(string message)
-        {
-            return new DeviceOpResult { Ok = false, Message = message };
-        }
-    }
-
-    /// <summary>How LOTUS switched a device off.</summary>
-    public enum BlockMethod
-    {
-        /// <summary>Disabled like in Device Manager. The device stays off across replugging and restarts.</summary>
-        Disabled,
-        /// <summary>
-        /// Removed from the running system, and Windows would not take a lasting
-        /// disable on top. Windows forgets the removal when the device is plugged
-        /// in again, so the service removes it again each time.
-        /// </summary>
-        Removed
-    }
-
     /// <summary>
     /// Disables and enables devices the way Device Manager does. Both calls need
     /// administrator rights.

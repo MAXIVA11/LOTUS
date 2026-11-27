@@ -2,7 +2,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using System.Security.AccessControl;
 using System.Threading;
 
 namespace Lotus.Core
@@ -10,9 +9,11 @@ namespace Lotus.Core
     /// <summary>What the service loop needs from its surroundings. Tests swap parts of it out.</summary>
     public sealed class GuardOptions
     {
+        /// <summary>The operating system underneath. Left empty, it is the one this copy was built for.</summary>
+        public GuardPlatform Platform;
         public IDeviceBackend Backend;
         public IReadOnlyPolicy ReadOnly;
-        /// <summary>The Windows installation restrictions. Tests and the developer mode put their own in.</summary>
+        /// <summary>The system's way of keeping new devices from starting. Tests and the developer mode put their own in.</summary>
         public IInstallGate InstallGate;
         public string PipeName = GuardProtocol.PipeName;
         /// <summary>Only elevated administrators may use the control pipe. Off in tests.</summary>
@@ -25,7 +26,7 @@ namespace Lotus.Core
         /// Asks whether setup wants a damaged policy store thrown away, and forgets
         /// the request. Tests put their own answer in.
         /// </summary>
-        public Func<bool> TakeResetRequest = ResetRequest.Take;
+        public Func<bool> TakeResetRequest;
     }
 
     /// <summary>
@@ -58,9 +59,10 @@ namespace Lotus.Core
         private readonly ConcurrentQueue<PendingCommand> commands = new ConcurrentQueue<PendingCommand>();
         private readonly ActivityLog log;
         private Thread thread;
-        private DeviceWatcher watcher;
+        private GuardPlatform platform;
+        private IDisposable watcher;
         private FileSystemWatcher fileWatcher;
-        private GuardPipeServer pipe;
+        private IControlServer pipe;
         private int fullSoon;
 
         private SecureStore store;
@@ -143,26 +145,28 @@ namespace Lotus.Core
         {
             try
             {
+                platform = options.Platform ?? GuardPlatform.Default();
                 PrepareFolders();
                 LoadStore();
 
                 Ledger ledger = LoadLedger();
-                IDeviceBackend backend = options.Backend ?? new WindowsDeviceBackend();
+                IDeviceBackend backend = options.Backend ?? platform.CreateBackend();
+                platform.LedgerLoaded(ledger);
                 // Anything that is not the installed service keeps its hands off
-                // the Windows policy: tests, and the guard developers start by hand.
+                // the system's own policy: tests, and the guard developers start by hand.
                 installGate = options.InstallGate ??
-                              (options.HardenFolders ? (IInstallGate)new RegistryInstallGate() : new NoInstallGate());
-                enforcer = new Enforcer(backend, options.ReadOnly ?? new RegistryReadOnlyPolicy(), ledger, SaveLedger,
+                              (options.HardenFolders ? platform.CreateInstallGate(backend) : new NoInstallGate());
+                enforcer = new Enforcer(backend, options.ReadOnly ?? platform.CreateReadOnly(), ledger, SaveLedger,
                     log.Write, null, installGate);
 
                 bool notifications = true;
                 if (options.WatchDevices)
                 {
-                    watcher = new DeviceWatcher(OnDeviceChange);
-                    notifications = watcher.Start();
+                    watcher = platform.WatchDevices(OnDeviceChange);
+                    notifications = watcher != null;
                 }
                 StartFileWatcher();
-                pipe = new GuardPipeServer(options.PipeName, Dispatch,
+                pipe = platform.CreateControlServer(options.PipeName, Dispatch,
                     problem => log.Write(EventTypes.Tamper, problem), options.AdministratorsOnly);
                 pipe.Start();
 
@@ -231,12 +235,7 @@ namespace Lotus.Core
         private void OnDeviceChange(int action, string instanceId)
         {
             bool usb = instanceId != null && instanceId.StartsWith(@"USB\", StringComparison.OrdinalIgnoreCase);
-            if (usb && (action == DeviceWatcher.Enumerated || action == DeviceWatcher.Removed))
-            {
-                // The same ID can come back as a different device, so read it afresh.
-                DeviceScanner.Forget(instanceId);
-            }
-            if (usb && (action == DeviceWatcher.Enumerated || action == DeviceWatcher.Started))
+            if (usb && (action == DeviceChange.Enumerated || action == DeviceChange.Started))
             {
                 NotifyArrival(instanceId);
                 return;
@@ -288,14 +287,14 @@ namespace Lotus.Core
                 clean = result.Failures == 0 && result.Pending == 0;
                 lastPassError = null;
 
-                string diskError = (backend as WindowsDeviceBackend)?.SystemDiskError;
+                string diskError = (backend as IReportsSystemDisk)?.SystemDiskError;
                 if (diskError != lastSystemDiskError)
                 {
                     lastSystemDiskError = diskError;
                     if (diskError != null)
                     {
                         log.Write(EventTypes.Warning,
-                            "Could not work out which disk Windows runs from, so storage devices are left alone for now. " +
+                            "Could not work out which disk the system runs from, so storage devices are left alone for now. " +
                             diskError);
                     }
                 }
@@ -326,40 +325,7 @@ namespace Lotus.Core
                 return;
             }
 
-            // Setup has normally done all of this already. The service repeats it,
-            // because it is the one that trusts what these folders contain.
-            try
-            {
-                if (Directory.Exists(LotusPaths.DataDir) && FolderGuard.IsReparsePoint(LotusPaths.DataDir))
-                {
-                    Directory.Delete(LotusPaths.DataDir, false);
-                }
-                if (!FolderGuard.CreateNew(LotusPaths.DataDir, FolderGuard.PublicFolderRules()))
-                {
-                    FolderGuard.Apply(LotusPaths.DataDir, FolderGuard.PublicFolderRules(), "secure");
-                }
-
-                if (Directory.Exists(LotusPaths.SecureDir) && FolderGuard.IsReparsePoint(LotusPaths.SecureDir))
-                {
-                    Directory.Delete(LotusPaths.SecureDir, false);
-                }
-                if (!FolderGuard.CreateNew(LotusPaths.SecureDir, FolderGuard.SecretFolderRules()))
-                {
-                    FolderGuard.Apply(LotusPaths.SecureDir, FolderGuard.SecretFolderRules(), "seal.key");
-                }
-                string key = Path.Combine(LotusPaths.SecureDir, "seal.key");
-                if (File.Exists(key) && !FolderGuard.IsReparsePoint(key))
-                {
-                    File.SetAccessControl(key, FolderGuard.KeyFileRules());
-                }
-            }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
-                                       ex is InvalidOperationException)
-            {
-                Directory.CreateDirectory(LotusPaths.DataDir);
-                Directory.CreateDirectory(LotusPaths.SecureDir);
-                log.Write(EventTypes.Error, "The permissions on the LOTUS data folder could not be set. " + ex.Message);
-            }
+            platform.PrepareFolders(problem => log.Write(EventTypes.Error, problem));
         }
 
         // ---------- the policy store ----------
@@ -367,10 +333,13 @@ namespace Lotus.Core
         private void LoadStore()
         {
             store = new SecureStore(LotusPaths.SecureDir, LotusPaths.LegacyPolicyFile);
-            if (options.HardenFolders) store.KeyFileSecurity = FolderGuard.KeyFileRules;
+            if (options.HardenFolders) platform.ConfigureStore(store);
             StoreLoad loaded = store.Load();
 
-            bool resetAsked = options.TakeResetRequest != null && options.TakeResetRequest();
+            // Only the installed service looks for a note from setup. Tests give their own answer.
+            bool resetAsked = options.TakeResetRequest != null
+                ? options.TakeResetRequest()
+                : options.HardenFolders && platform.TakeResetRequest();
             if (loaded.State == StoreState.Tampered && resetAsked)
             {
                 // Setup was run again on a locked-down PC. That is the way out:
@@ -697,11 +666,11 @@ namespace Lotus.Core
                 int problems = enforcer.ReleaseEverything();
                 store.Erase();
                 DeleteQuietly(LotusPaths.StatusFile);
-                if (options.HardenFolders) LetAdministratorsDelete();
+                if (options.HardenFolders) platform.HandBackFolders();
                 stopPurpose = purpose;
                 Dictionary<string, object> reply = Accept(problems == 0
                     ? ""
-                    : problems + " blocked device(s) could not be switched back on. Enable them in Device Manager.");
+                    : problems + " blocked device(s) could not be switched back on. " + SystemWords.SwitchOnByHand);
                 reply["problems"] = problems;
                 return reply;
             }
@@ -709,30 +678,6 @@ namespace Lotus.Core
             log.Write(EventTypes.Security, "LOTUS Guard is stopping so that LOTUS can be updated.");
             stopPurpose = purpose;
             return Accept();
-        }
-
-        /// <summary>Hands the data folder back to administrators, so the uninstaller can delete it.</summary>
-        private void LetAdministratorsDelete()
-        {
-            try
-            {
-                var open = new DirectorySecurity();
-                open.SetAccessRuleProtection(true, false);
-                const InheritanceFlags inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
-                open.AddAccessRule(new FileSystemAccessRule(
-                    new System.Security.Principal.SecurityIdentifier(
-                        System.Security.Principal.WellKnownSidType.LocalSystemSid, null),
-                    FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
-                open.AddAccessRule(new FileSystemAccessRule(
-                    new System.Security.Principal.SecurityIdentifier(
-                        System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null),
-                    FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
-                FolderGuard.Apply(LotusPaths.DataDir, open);
-            }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
-                                       ex is InvalidOperationException)
-            {
-            }
         }
 
         /// <summary>
