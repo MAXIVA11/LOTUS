@@ -342,6 +342,13 @@ namespace Lotus.Core
             {
                 return DeviceOpResult.Fail("Could not find the device: " + CfgMgr.Describe(cr) + ".");
             }
+            // Look again right before acting. A device that started in the meantime
+            // is installed, and forgetting it now would only take it away again.
+            if (CfgMgr.CM_Get_DevNode_Status(out int status, out int _, node, 0) == CfgMgr.CR_SUCCESS &&
+                (status & CfgMgr.DN_STARTED) != 0)
+            {
+                return new DeviceOpResult { Ok = true, Message = "already running" };
+            }
             bool hasParent = CfgMgr.CM_Get_Parent(out int parent, node, 0) == CfgMgr.CR_SUCCESS;
 
             string how = Uninstall(instanceId, node);

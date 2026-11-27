@@ -283,7 +283,9 @@ namespace Lotus.Core
                     }
                 }
                 PassResult result = enforcer.RunOnce(policy);
-                clean = result.Failures == 0;
+                // A device that is being let in counts as unfinished business, so
+                // that the next look comes in a quarter of a second, not in two.
+                clean = result.Failures == 0 && result.Pending == 0;
                 lastPassError = null;
 
                 string diskError = (backend as WindowsDeviceBackend)?.SystemDiskError;
