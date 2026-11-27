@@ -1201,7 +1201,8 @@ namespace Lotus.Linux.Tests
             Apply(client, new Policy { Armed = true, Storage = StorageMode.ReadOnly });
             Assert.True(Wait.Until(() => File.Exists(RulePath)));
             Assert.True(Becomes("1-2", "1")); // allowed, only not writable
-            Assert.Contains(Events(), e => e.Type == EventTypes.ReadOnlyOn);
+            // The line is written a moment after the rule file.
+            Assert.True(Wait.Until(() => Events().Any(e => e.Type == EventTypes.ReadOnlyOn)));
 
             Apply(client, new Policy());
             Assert.True(Wait.Until(() => !File.Exists(RulePath)));

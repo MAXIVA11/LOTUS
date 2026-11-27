@@ -1315,8 +1315,9 @@ namespace Lotus.Tests
             Assert.True(Eventually(() => bus.Scan().Single().IsOff));
             Assert.True(Eventually(() => systemLog.Snapshot().Any(e => e.Type == EventTypes.Blocked)));
 
+            // Nothing is written between the two looks once the pass is over.
+            Assert.True(Eventually(() => Events().Count == systemLog.Snapshot().Count));
             List<LotusEvent> mirrored = systemLog.Snapshot();
-            Assert.Equal(Events().Count, mirrored.Count);
             Assert.Contains(mirrored, e => EventIds.For(e.Type) == EventIds.GuardStarted);
             Assert.Contains(mirrored, e => EventIds.For(e.Type) == EventIds.PolicyChanged);
             LotusEvent blocked = mirrored.Single(e => e.Type == EventTypes.Blocked);
