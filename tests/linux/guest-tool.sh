@@ -96,6 +96,17 @@ sys.exit(0 if eval(sys.argv[1]) else 1)' "$2"
     journal)
         sudo journalctl -t lotus -o json --no-pager "LOTUS_EVENT=$2" | grep -F -- "${3:-LOTUS_EVENT}" | grep -q .
         ;;
+    # Takes the machine's own keyboard and mouse away, the ones on the PS/2 ports
+    # that every PC has, so that the USB ones are all there is.
+    no-ps2)
+        for driver in atkbd psmouse; do
+            for device in /sys/bus/serio/drivers/$driver/serio*; do
+                [ -e "$device" ] && echo -n "$(basename "$device")" | sudo tee "/sys/bus/serio/drivers/$driver/unbind" >/dev/null
+            done
+        done
+        sleep 1
+        ! grep -Eq 'AT Translated|PS/2' /proc/bus/input/devices
+        ;;
     # What the kernel wrote about a device since the computer started.
     held-at-start) n=$(name "$2") || exit 2; sudo dmesg | grep -q "usb $n: Device is not authorized for usage" ;;
     switched-on) n=$(name "$2") || exit 2; sudo dmesg | grep -q "usb $n: authorized to connect" ;;

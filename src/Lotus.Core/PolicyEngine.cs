@@ -28,6 +28,8 @@ namespace Lotus.Core
         StorageBlocked,
         /// <summary>Untrusted USB devices are blocked.</summary>
         PnpBlocked,
+        /// <summary>The device is a keyboard, mouse or other input device that nobody has approved yet.</summary>
+        InputWaiting,
         /// <summary>Waiting for the device to list its functions.</summary>
         Identifying
     }
@@ -88,6 +90,7 @@ namespace Lotus.Core
 
             bool storageBlocked = policy.Storage == StorageMode.Block;
             bool pnpBlocked = policy.Pnp == PnpMode.Block;
+            bool approveInput = policy.ApproveInput;
 
             TrustEntry trust = policy.FindTrust(device, out TrustEntry outgrown);
             if (trust != null)
@@ -95,14 +98,14 @@ namespace Lotus.Core
                 // An entry that records what the device did can only be checked once the
                 // device has said what it does now. Until then, wait instead of assuming.
                 if (trust.Functions.Count > 0 && !device.FunctionsKnown && seenFor < IdentifyGrace &&
-                    (storageBlocked || pnpBlocked))
+                    (storageBlocked || pnpBlocked || approveInput))
                 {
                     return Decision.Pending();
                 }
                 return Decision.Allow(Reason.Trusted, trust);
             }
 
-            if (!storageBlocked && !pnpBlocked) return Decision.Allow(Reason.PolicyAllows);
+            if (!storageBlocked && !pnpBlocked && !approveInput) return Decision.Allow(Reason.PolicyAllows);
 
             Decision decision = Judge(policy, device, seenFor, storageBlocked, pnpBlocked);
             decision.Outgrown = outgrown;
@@ -130,6 +133,14 @@ namespace Lotus.Core
             bool hasStorage = (kinds & (DeviceKinds.Storage | DeviceKinds.Portable)) != 0;
             if (hasStorage && storageBlocked) return Decision.Block(Reason.StorageBlocked);
 
+            // Anything that can act as a keyboard or mouse waits for approval, also
+            // when it is something else as well: a headset with buttons can type too.
+            // What is built into the computer was not plugged in by anyone.
+            if (policy.ApproveInput && (kinds & DeviceKinds.Input) != 0 && !device.BuiltIn)
+            {
+                return Decision.Block(Reason.InputWaiting);
+            }
+
             if (pnpBlocked)
             {
                 DeviceKinds other = kinds & ~(DeviceKinds.Storage | DeviceKinds.Portable);
@@ -156,9 +167,15 @@ namespace Lotus.Core
         /// <summary>The rule behind a block, worded to follow "because".</summary>
         public static string BlockReason(Reason reason)
         {
-            return reason == Reason.StorageBlocked
-                ? "removable storage is blocked and this device is not trusted"
-                : "only trusted USB devices are allowed";
+            switch (reason)
+            {
+                case Reason.StorageBlocked:
+                    return "removable storage is blocked and this device is not trusted";
+                case Reason.InputWaiting:
+                    return "it can act as a keyboard or mouse and nobody has approved it yet";
+                default:
+                    return "only trusted USB devices are allowed";
+            }
         }
 
         /// <summary>One sentence that explains a decision to the person looking at the device.</summary>
@@ -171,6 +188,11 @@ namespace Lotus.Core
                 case Reason.SystemDisk:
                     return SystemWords.SystemDisk;
                 case Reason.Trusted:
+                    if (decision.Trust != null && decision.Trust.LetIn)
+                    {
+                        return "Let in without approval, because no other keyboard or mouse was working. " +
+                               "Approve it to keep it, or it waits again once an approved one works.";
+                    }
                     if (decision.Trust != null && decision.Trust.Kind == TrustKind.Vendor)
                     {
                         return "Trusted. Every device from this vendor is allowed.";
@@ -182,6 +204,13 @@ namespace Lotus.Core
                     return "Built into this computer, so the USB device rule leaves it alone.";
                 case Reason.InputAllowed:
                     return "Allowed because the policy keeps keyboards and mice working.";
+                case Reason.InputWaiting:
+                    if (decision.Outgrown != null)
+                    {
+                        return "Waiting for approval. It is on the trusted list, but it now has a function it did " +
+                               "not have when it was trusted. Remove the trust and add it again if you expect that.";
+                    }
+                    return "Waiting for approval, because " + BlockReason(decision.Reason) + ". Trust it to let it work.";
                 case Reason.StorageBlocked:
                 case Reason.PnpBlocked:
                     if (decision.Outgrown != null)

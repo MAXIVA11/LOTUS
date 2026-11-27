@@ -369,6 +369,47 @@ check "the journal has it with the number 1101" "t journal trust_ended $STICK2 &
 check "the first stick was not touched" "t auth $STICK1 | grep -qx 1"
 check "an end can be given to an entry that is on the list, and taken away again" "sudo lotus trust \"\$(t id $STICK1)\" --until 2031-01-01 | grep -q 'now ends on 2031-01-01 23:59' && sudo lotus trust \"\$(t id $STICK1)\" --for never | grep -q 'has no end now' && ! sudo lotus trusted | grep -q until"
 
+# ---------------------------------------------------------------- new keyboards and mice
+
+section "New keyboards and mice wait for approval"
+# Every other rule is switched off, so that what happens here is this rule alone.
+g "sudo lotus usb allow >/dev/null; sudo lotus storage allow >/dev/null"
+check "with storage and other devices allowed, the adapter and both sticks work" "t wait-auth $SERIAL 1 && t wait-auth $STICK1 1 && t wait-auth $STICK2 1"
+approve_output=$(g "sudo lotus input approve" 2>&1)
+printf '%s\n' "$approve_output" | sed 's/^/    /'
+if printf '%s' "$approve_output" | grep -q 'put on the trusted list' && printf '%s' "$approve_output" | grep -q 'QEMU USB Keyboard' && printf '%s' "$approve_output" | grep -q 'QEMU USB Mouse'; then ok "switching the rule on trusts the keyboard and the mouse that work right now"; else bad "switching the rule on trusts the keyboard and the mouse that work right now"; fi
+check "the status says so, as text and as JSON" "sudo lotus status | grep -q 'NEW ONES WAIT FOR APPROVAL' && t json 'd.input == \"approve\" and d.usb == \"allow\" and d.trusted == 3'"
+check "they keep working" "t auth $KBD | grep -qx 1 && t auth $MOUSE | grep -qx 1 && t configured $KBD"
+g "sudo dmesg -C"
+plug k2 usb-kbd 8 serial=$KBD2
+check "a second keyboard is seen" "t present $KBD2"
+sleep 3
+check "it never runs, although every other USB device is allowed" "t auth $KBD2 | grep -qx 0 && t not-configured $KBD2 && ! t switched-on $KBD2"
+check "no keyboard driver ever touched it" "! sudo dmesg | grep -Eqi 'input:.*QEMU USB Keyboard'"
+check "LOTUS lists it as pending and says why" "sudo lotus devices | grep -B1 $KBD2 | grep -q 'PENDING' && sudo lotus devices | grep -q 'nobody has approved it yet'"
+check "the journal has the block with its reason" "t journal blocked 'nobody has approved it yet'"
+echo "    waiting longer than the safety net would"
+sleep 18
+check "it is not let in, because approved ones work and the machine has a keyboard of its own" "t auth $KBD2 | grep -qx 0 && ! sudo lotus trusted | grep -q 'NOT APPROVED'"
+screen=$(ui "2")
+if printf '%s' "$screen" | grep -q 'PENDING *QEMU USB Keyboard'; then ok "the interface marks it as pending"; else bad "the interface marks it as pending" "$screen"; fi
+check "approving it switches it on" "sudo lotus trust \"\$(t id $KBD2)\" && t wait-auth $KBD2 1 && t configured $KBD2"
+
+# The safety net: with nothing left to type or click with, one is let in.
+check "the machine's own keyboard and mouse are taken away" "t no-ps2"
+g "sudo lotus untrust \"\$(t id $KBD)\" --yes >/dev/null; sudo lotus untrust \"\$(t id $MOUSE)\" --yes >/dev/null; sudo lotus untrust \"\$(t id $KBD2)\" --yes >/dev/null"
+check "with their trust taken away all three wait" "t wait-auth $KBD 0 && t wait-auth $MOUSE 0 && t wait-auth $KBD2 0"
+echo "    waiting for the safety net"
+check "after a while one keyboard is let in, and only one" "t wait-auth $KBD 1 40 && t auth $MOUSE | grep -qx 0 && t auth $KBD2 | grep -qx 0"
+check "it is marked as not approved" "sudo lotus trusted | grep -q 'NOT APPROVED *QEMU USB Keyboard' && sudo lotus devices | grep -Eq 'LET IN +QEMU USB Keyboard'"
+check "the log and the journal say it was let in without approval, under number 2102" "sudo lotus log 20 | grep -q 'INPUT_LET_IN.*let in without approval' && t journal input_let_in '\"LOTUS_EVENT_ID\":\"2102\"'"
+check "approving the mouse sends the keyboard back to waiting" "sudo lotus trust \"\$(t id $MOUSE)\" && t wait-auth $MOUSE 1 && t wait-auth $KBD 0 15 && ! sudo lotus trusted | grep -q 'NOT APPROVED'"
+check "the log says it waits again" "sudo lotus log 20 | grep -q 'waits for approval again'"
+check "switching the rule off lets every keyboard work again" "sudo lotus input on && t wait-auth $KBD 1 && t wait-auth $KBD2 1 && sudo lotus status | grep -q 'ALWAYS WORK'"
+unplug k2
+g "sudo lotus untrust \"\$(t id $MOUSE)\" >/dev/null 2>&1; sudo lotus storage block --yes >/dev/null; sudo lotus usb trusted --yes >/dev/null"
+check "back to the rules of before: storage blocked, trusted only, one trusted stick" "t wait-auth $STICK2 0 && t wait-auth $SERIAL 0 && t auth $STICK1 | grep -qx 1 && t auth $KBD | grep -qx 1 && t json 'd.trusted == 1 and d.input == \"always\"'"
+
 # ---------------------------------------------------------------- other kinds
 
 section "Other kinds of device"

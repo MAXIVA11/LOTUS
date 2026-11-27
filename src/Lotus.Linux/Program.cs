@@ -24,6 +24,8 @@ namespace Lotus.Linux
         private static string entryName;
         /// <summary>What followed --for or --until: how long the trust being given should last.</summary>
         private static string termText;
+        /// <summary>With "lotus input approve": do not put the keyboards and mice that are connected on the trusted list.</summary>
+        private static bool noTrust;
 
         private static int Main(string[] args)
         {
@@ -47,6 +49,7 @@ namespace Lotus.Linux
                     case "--yes":
                     case "-y": yes = true; break;
                     case "--name" when i + 1 < args.Length: entryName = args[++i]; break;
+                    case "--no-trust": noTrust = true; break;
                     case "--for" when i + 1 < args.Length:
                     case "--until" when i + 1 < args.Length:
                         termText = args[++i];
@@ -71,8 +74,7 @@ namespace Lotus.Linux
                     case "disarm": return Change(p => p.Armed = false, "LOTUS is disarmed. Nothing is blocked.");
                     case "storage": return SetStorage(Argument(rest, 1));
                     case "usb": return SetUsb(Argument(rest, 1));
-                    case "input": return SetSwitch(Argument(rest, 1), (p, on) => p.AllowInput = on,
-                        "Keyboards and mice always work.", "Keyboards and mice need to be trusted like any other device.");
+                    case "input": return SetInput(Argument(rest, 1));
                     case "strict": return SetSwitch(Argument(rest, 1), (p, on) => p.Strict = on,
                         "New devices the policy blocks are not switched on at all.",
                         "New devices the policy blocks are switched off right after they start.");
@@ -295,7 +297,8 @@ namespace Lotus.Linux
                 state.Policy.Storage == StorageMode.Allow ? Ui.Green : Ui.Pink);
             Ui.Line("USB DEVICES", state.Policy.Pnp == PnpMode.Block ? "TRUSTED ONLY" : "ALLOW",
                 state.Policy.Pnp == PnpMode.Block ? Ui.Pink : Ui.Green);
-            Ui.Line("KEYBOARDS AND MICE", state.Policy.AllowInput ? "ALWAYS WORK" : "NEED TRUST", Ui.Text);
+            Ui.Line("KEYBOARDS AND MICE", state.Policy.Input == InputRule.Always ? "ALWAYS WORK"
+                : state.Policy.Input == InputRule.Approve ? "NEW ONES WAIT FOR APPROVAL" : "NEED TRUST", Ui.Text);
             Ui.Line("NEW DEVICES", StrictText(state), Ui.Text);
             if (KernelHoldsAtStart())
             {
@@ -348,6 +351,8 @@ namespace Lotus.Linux
                 : state.Policy.Storage == StorageMode.ReadOnly ? "readonly" : "allow";
             report["usb"] = state.Policy.Pnp == PnpMode.Block ? "block" : "allow";
             report["keepInput"] = state.Policy.AllowInput;
+            report["input"] = state.Policy.Input == InputRule.Always ? "always"
+                : state.Policy.Input == InputRule.Approve ? "approve" : "trusted";
             report["strict"] = state.Policy.Strict;
             report["strictState"] = state.Strict;
             report["trusted"] = state.Policy.Trusted.Count(entry => !entry.IsOver(now));
@@ -395,10 +400,20 @@ namespace Lotus.Linux
                     case DeviceState.Blocking:
                         label = "BLOCKED";
                         colour = Ui.Pink;
+                        if (status.Decision.Reason == Reason.InputWaiting)
+                        {
+                            label = "PENDING";
+                            colour = Ui.Yellow;
+                        }
                         break;
                     case DeviceState.Trusted:
                         label = "TRUSTED";
                         colour = Ui.Cyan;
+                        if (status.Decision.Trust != null && status.Decision.Trust.LetIn)
+                        {
+                            label = "LET IN";
+                            colour = Ui.Yellow;
+                        }
                         break;
                     case DeviceState.OffElsewhere:
                         label = "OFF";
@@ -415,7 +430,8 @@ namespace Lotus.Linux
                 Console.WriteLine("     " + Ui.Paint(device.InstanceId, Ui.Dim) +
                                   (device.BuiltIn ? Ui.Paint("  built in", Ui.Dim) : "") +
                                   (device.IsSystemDisk ? Ui.Paint("  the system runs from it", Ui.Dim) : ""));
-                if (status.State == DeviceState.Blocked || status.State == DeviceState.Blocking)
+                bool letIn = status.Decision.Trust != null && status.Decision.Trust.LetIn;
+                if (status.State == DeviceState.Blocked || status.State == DeviceState.Blocking || letIn)
                 {
                     Console.WriteLine("     " + Ui.Paint(PolicyEngine.Explain(status.Decision, state.Policy), Ui.Dim));
                 }
@@ -568,6 +584,66 @@ namespace Lotus.Linux
                     Ui.Error("Say which USB devices may work: lotus usb allow | trusted");
                     return 2;
             }
+        }
+
+        /// <summary>
+        /// The rule for keyboards, mice and other input devices. "approve" makes a
+        /// new one wait until it is trusted. The ones that work right now are put
+        /// on the trusted list in the same step, unless --no-trust says not to.
+        /// </summary>
+        private static int SetInput(string value)
+        {
+            switch ((value ?? "").ToLowerInvariant())
+            {
+                case "on":
+                case "always":
+                    return Change(p => p.Input = InputRule.Always, "Keyboards and mice always work.");
+                case "off":
+                case "trusted":
+                    return Change(p => p.Input = InputRule.Trusted, "Keyboards and mice need to be trusted like any other device.");
+                case "approve":
+                    break;
+                default:
+                    Ui.Error("Say what happens to keyboards and mice: lotus input on | approve | off");
+                    return 2;
+            }
+
+            const string done = "A new keyboard or mouse waits until you approve it.";
+            if (noTrust) return Change(p => p.Input = InputRule.Approve, done);
+
+            State state = Read();
+            if (state.Lockdown)
+            {
+                Ui.Error("LOTUS is locked down because its policy store was damaged. Run the LOTUS installer again to reset it.");
+                return 1;
+            }
+            Policy next = state.Policy.Clone();
+            next.Input = InputRule.Approve;
+            // Judged as if LOTUS were armed, so that the list is right for the moment it is.
+            Policy judged = next.Clone();
+            judged.Armed = true;
+            var mine = new List<UsbDevice>();
+            foreach (DeviceStatus status in state.Devices)
+            {
+                UsbDevice device = status.Device;
+                if (device.Started && PolicyEngine.Evaluate(judged, device, TimeSpan.MaxValue).Reason == Reason.InputWaiting)
+                {
+                    mine.Add(device);
+                }
+            }
+            List<TrustEntry> added = next.TrustAll(mine);
+            if (added.Count > 0)
+            {
+                Ui.Note(added.Count == 1
+                    ? "This one works right now. It is put on the trusted list, so it keeps working:"
+                    : "These work right now. They are put on the trusted list, so they keep working:");
+                foreach (TrustEntry entry in added)
+                {
+                    Console.WriteLine("     " + Ui.Paint(Shorten(entry.Name, 40).PadRight(40), Ui.Text) + "  " +
+                                      Ui.Paint(KindText(entry.Kind), Ui.Dim));
+                }
+            }
+            return Apply(next, done);
         }
 
         private static int SetSwitch(string value, Action<Policy, bool> set, string whenOn, string whenOff)
@@ -734,7 +810,9 @@ namespace Lotus.Linux
             foreach (TrustEntry entry in state.Policy.Trusted)
             {
                 bool connected = state.Devices.Any(d => entry.Matches(d.Device));
-                Console.WriteLine("  " + Ui.Paint(KindText(entry.Kind).ToUpperInvariant().PadRight(12), Ui.Cyan) + "  " +
+                Console.WriteLine("  " + (entry.LetIn
+                                      ? Ui.Paint("NOT APPROVED".PadRight(12), Ui.Yellow)
+                                      : Ui.Paint(KindText(entry.Kind).ToUpperInvariant().PadRight(12), Ui.Cyan)) + "  " +
                                   Ui.Paint(Shorten(string.IsNullOrWhiteSpace(entry.Name) ? "Unnamed device" : entry.Name, 44), Ui.Text) +
                                   (connected ? Ui.Paint("  connected", Ui.Dim) : ""));
                 Console.WriteLine("  " + "".PadRight(14) + Ui.Paint(entry.Id, Ui.Dim) +
@@ -847,7 +925,10 @@ namespace Lotus.Linux
   lotus storage allow|readonly|block
                                   USB drives, card readers, cameras and phones.
   lotus usb allow|trusted         Every other USB device: all of them, or only trusted ones.
-  lotus input on|off              Keep keyboards and mice working under ""trusted"".
+  lotus input on|approve|off      Keyboards and mice: on, they always work. approve, a new one
+                                  waits until you trust it, under any rule, and the ones that
+                                  work now are trusted (--no-trust leaves them out). off, they
+                                  need trust like any other device under ""usb trusted"".
   lotus strict on|off             Refuse new blocked devices before they start. Off unless you turn it on.
   lotus arm                       Start enforcing the rules.
   lotus disarm                    Stop enforcing. Nothing is blocked.

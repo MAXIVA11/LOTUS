@@ -34,6 +34,11 @@ namespace Lotus.Core
         public ISystemLog SystemLog;
         /// <summary>The time, for tests that let a trust entry run out.</summary>
         public Func<DateTime> Clock;
+        /// <summary>
+        /// Whether a keyboard or mouse that is not a USB device works. Left empty,
+        /// the installed service asks the system and everything else answers no.
+        /// </summary>
+        public Func<bool> OtherInputWorks;
     }
 
     /// <summary>
@@ -84,6 +89,8 @@ namespace Lotus.Core
         private string lastSystemDiskError;
         private string lastStatus;
         private DateTime trustSweepNotBefore = DateTime.MinValue;
+        private DateTime inputSweepNotBefore = DateTime.MinValue;
+        private DateTime? noInputSince;
 
         /// <summary>
         /// Raised after setup asked over the control pipe for the service to stop.
@@ -300,6 +307,7 @@ namespace Lotus.Core
                     }
                 }
                 PassResult result = enforcer.RunOnce(policy);
+                if (KeepOneInputWorking(result.Devices)) Interlocked.Exchange(ref fullSoon, 1);
                 // A device that is being let in counts as unfinished business, so
                 // that the next look comes in a quarter of a second, not in two.
                 clean = result.Failures == 0 && result.Pending == 0;
@@ -361,6 +369,147 @@ namespace Lotus.Core
                               " and has ended. The entry " + entry.Id + " is off the trusted list."
                 });
             }
+        }
+
+        /// <summary>
+        /// How long the computer has to be without any working keyboard or mouse
+        /// before LOTUS lets one in that nobody approved. Long enough for the
+        /// approved ones to come up when the computer starts.
+        /// </summary>
+        public static readonly TimeSpan NoInputHold = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// The safety net under "new keyboards and mice wait for approval". If
+        /// nothing a person could type or click with is working, the first input
+        /// device that waits is let in, marked as such, and the log says so. It
+        /// goes back to waiting as soon as an approved one works again. Returns
+        /// true when the trusted list changed.
+        /// </summary>
+        private bool KeepOneInputWorking(List<DeviceStatus> devices)
+        {
+            if (lockdown) return false;
+            List<TrustEntry> letIn = policy.Trusted.FindAll(entry => entry.LetIn);
+            bool wanted = policy.Armed && policy.ApproveInput;
+            if (!wanted && letIn.Count == 0)
+            {
+                noInputSince = null;
+                return false;
+            }
+            DateTime now = options.Clock != null ? options.Clock() : DateTime.UtcNow;
+            if (now < inputSweepNotBefore) return false;
+
+            bool approvedWorks = false;
+            bool letInWorks = false;
+            DeviceStatus waiting = null;
+            var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (DeviceStatus status in devices)
+            {
+                UsbDevice device = status.Device;
+                present.Add(device.InstanceId);
+                if (status.Decision.Reason == Reason.InputWaiting)
+                {
+                    if (waiting == null || BetterToLetIn(status.Device, waiting.Device)) waiting = status;
+                    continue;
+                }
+                bool works = device.Started && !device.IsOff && (device.Kinds & DeviceKinds.Input) != 0;
+                if (!works) continue;
+                if (status.Decision.Reason == Reason.Trusted && status.Decision.Trust != null && status.Decision.Trust.LetIn)
+                {
+                    letInWorks = true;
+                }
+                else if (status.Decision.Verdict == Verdict.Allow)
+                {
+                    approvedWorks = true;
+                }
+            }
+            if (!approvedWorks && wanted)
+            {
+                try
+                {
+                    approvedWorks = options.OtherInputWorks != null
+                        ? options.OtherInputWorks()
+                        : options.HardenFolders && platform.OtherInputWorks();
+                }
+                catch (Exception)
+                {
+                    // Not knowing is treated as "there is none", which errs on the side of not locking anyone out.
+                }
+            }
+
+            // An entry of this kind has no purpose once the rule is off, once an
+            // approved keyboard or mouse works, or once its device is gone.
+            List<TrustEntry> drop = letIn.FindAll(entry => !wanted || approvedWorks || !present.Contains(entry.Id));
+            TrustEntry add = null;
+            if (wanted && !approvedWorks && !letInWorks && waiting != null)
+            {
+                if (noInputSince == null) noInputSince = now;
+                if (now - noInputSince.Value >= NoInputHold && policy.Trusted.Count < Policy.MaxTrusted)
+                {
+                    add = TrustEntry.ForDevice(waiting.Device);
+                    add.LetIn = true;
+                }
+            }
+            else
+            {
+                noInputSince = null;
+            }
+            if (drop.Count == 0 && add == null) return false;
+
+            Policy next = policy.Clone();
+            next.Trusted.RemoveAll(entry => entry.LetIn && drop.Exists(d => d.Kind == entry.Kind && d.Id == entry.Id));
+            if (add != null) next.Trusted.Add(add);
+            StoreContent previous = content;
+            content = new StoreContent { Policy = next, Serial = content.Serial };
+            if (!SaveStore())
+            {
+                content = previous;
+                inputSweepNotBefore = now + TimeSpan.FromMinutes(1);
+                return false;
+            }
+            policy = next;
+            markAbsentDue = true;
+            noInputSince = null;
+            foreach (TrustEntry entry in drop)
+            {
+                if (!present.Contains(entry.Id)) continue;
+                log.Write(new LotusEvent
+                {
+                    Type = EventTypes.PolicyChanged,
+                    DeviceId = entry.Id,
+                    DeviceName = entry.Name ?? "",
+                    Message = (string.IsNullOrEmpty(entry.Name) ? entry.Id : entry.Name) +
+                              " was let in without approval and waits for approval again, because " +
+                              (wanted ? "an approved keyboard or mouse works now." : "the rule that let it in is off.")
+                });
+            }
+            if (add != null)
+            {
+                log.Write(new LotusEvent
+                {
+                    Type = EventTypes.InputLetIn,
+                    DeviceId = add.Id,
+                    DeviceName = add.Name ?? "",
+                    Message = "No keyboard or mouse was working, so " +
+                              (string.IsNullOrEmpty(add.Name) ? add.Id : add.Name) +
+                              " was let in without approval. Approve it to keep it. Otherwise it waits again " +
+                              "as soon as an approved keyboard or mouse works."
+                });
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Which of two waiting devices to let in when the computer has nothing to
+        /// type or click with. A plain keyboard or mouse comes before a device that
+        /// is something else as well, because a headset with buttons does not get
+        /// anyone to LOTUS. After that the choice only has to be the same every time.
+        /// </summary>
+        private static bool BetterToLetIn(UsbDevice candidate, UsbDevice current)
+        {
+            bool plain = candidate.Kinds == DeviceKinds.Input;
+            bool currentPlain = current.Kinds == DeviceKinds.Input;
+            if (plain != currentPlain) return plain;
+            return string.Compare(candidate.InstanceId, current.InstanceId, StringComparison.OrdinalIgnoreCase) < 0;
         }
 
         private void ReportPassError(Exception ex)
@@ -758,7 +907,8 @@ namespace Lotus.Core
                 ? "other USB devices blocked unless trusted" +
                   (p.AllowInput ? " (keyboards and mice stay allowed)" : "")
                 : "other USB devices allowed";
-            if (p.Strict && p.Pnp == PnpMode.Block) pnp += ", new devices refused before they start";
+            if (p.ApproveInput) pnp += ", new keyboards and mice wait for approval";
+            if (p.Strict && (p.Pnp == PnpMode.Block || p.ApproveInput)) pnp += ", new devices refused before they start";
             else if (p.Strict && p.Storage == StorageMode.Block) pnp += ", new storage devices refused before they start";
             string trusted = p.Trusted.Count == 1 ? "1 trusted entry" : p.Trusted.Count + " trusted entries";
             return "armed, " + storage + ", " + pnp + ", " + trusted + ".";

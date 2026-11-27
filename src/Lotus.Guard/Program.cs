@@ -151,6 +151,8 @@ namespace Lotus.Guard
             {
                 ["version"] = LotusPaths.Version,
                 ["lastTamper"] = tamper.HasValue ? Json.FormatTime(tamper.Value) : null,
+                // Keyboards and mice that work and are not USB devices. LOTUS does not manage them.
+                ["otherInput"] = new List<object>(WindowsInput.FindBesidesUsb()),
                 ["policy"] = source == "Unknown"
                     ? "unknown, because LOTUS Guard is not answering."
                     : GuardWorker.Summarize(policy),

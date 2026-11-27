@@ -4,6 +4,19 @@ What changed in each version of LOTUS, newest first. The [releases page](https:/
 
 Version numbers follow [semantic versioning](https://semver.org): the last number is for fixes, the middle one for additions that keep everything working, the first for a change that needs something from you when you update.
 
+## 1.7.0, not released yet
+
+### Added
+
+- Keyboards and mice have a third choice, "Approve new". A new keyboard, mouse or other input device waits until you approve it, whatever the rule for other devices says. That stops a device that poses as a keyboard and types on its own. The ones connected when you switch it on are offered for trust in the same step. On Windows it is on the Control page. On Linux it is `lotus input approve` and the same choice in the interface.
+- A safety net under that choice: if no keyboard and no mouse works at all for 15 seconds, one waiting input device is let in, marked as not approved and logged under the new event number 2102. It waits again once an approved one works. A laptop's own keyboard and a Bluetooth keyboard count as working.
+- `LotusGuard --scan` lists the keyboards and mice that are not USB devices, and `lotus status --json` has the field `input`.
+
+### Changed
+
+- On Windows the choice for keyboards and mice replaces the box "Keep keyboards and mice working". "Always work" is what the ticked box was, and "Trusted only" is what the empty box was. The default is unchanged.
+- An older version reading a policy with "Approve new" takes it for "Trusted only", which is the closest it has.
+
 ## 1.6.0, 2026-11-27
 
 ### Added

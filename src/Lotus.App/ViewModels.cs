@@ -71,9 +71,15 @@ namespace Lotus.App
             {
                 case DeviceState.Trusted:
                     stateText = "TRUSTED"; stateKey = "trusted";
+                    if (status.Decision.Trust != null && status.Decision.Trust.LetIn)
+                    {
+                        // Let in because nothing else worked. It is not approved, and the row says so.
+                        stateText = "NOT APPROVED"; stateKey = "busy";
+                    }
                     break;
                 case DeviceState.Blocked:
                     stateText = "BLOCKED"; stateKey = "blocked";
+                    if (status.Decision.Reason == Reason.InputWaiting) stateText = "WAITING";
                     if (!status.Decision.IsBlock) why = "The policy allows this device again. It is being switched back on.";
                     break;
                 case DeviceState.Blocking:
@@ -94,7 +100,9 @@ namespace Lotus.App
                     break;
             }
 
-            bool trusted = policy.IsTrusted(d);
+            // A device that was only let in still offers the buttons that approve it.
+            TrustEntry trustedBy = policy.FindTrust(d);
+            bool trusted = trustedBy != null && !trustedBy.LetIn;
             bool readOnly = readOnlyActive && d.HasStorage && !d.IsOff;
             string note = d.HasSerial
                 ? ""
@@ -172,6 +180,7 @@ namespace Lotus.App
             {
                 case EventTypes.Blocked: row.TypeText = "BLOCKED"; row.TypeKey = "stop"; break;
                 case EventTypes.Released: row.TypeText = "ALLOWED"; row.TypeKey = "ok"; break;
+                case EventTypes.InputLetIn: row.TypeText = "LET IN"; row.TypeKey = "warn"; break;
                 case EventTypes.Connected: row.TypeText = "PLUGGED IN"; row.TypeKey = "quiet"; break;
                 case EventTypes.Removed: row.TypeText = "UNPLUGGED"; row.TypeKey = "quiet"; break;
                 case EventTypes.PolicyChanged: row.TypeText = "POLICY"; row.TypeKey = "info"; break;
@@ -335,10 +344,29 @@ namespace Lotus.App
             set { if (value) SetPnp(PnpMode.Block); }
         }
 
-        public bool DraftAllowInput
+        public bool InputAlways
         {
-            get => draft.AllowInput;
-            set { if (draft.AllowInput != value) { draft.AllowInput = value; RaiseDraft(); } }
+            get => draft.Input == InputRule.Always;
+            set { if (value) SetInput(InputRule.Always); }
+        }
+
+        public bool InputApprove
+        {
+            get => draft.Input == InputRule.Approve;
+            set { if (value) SetInput(InputRule.Approve); }
+        }
+
+        public bool InputTrusted
+        {
+            get => draft.Input == InputRule.Trusted;
+            set { if (value) SetInput(InputRule.Trusted); }
+        }
+
+        private void SetInput(InputRule rule)
+        {
+            if (draft.Input == rule) return;
+            draft.Input = rule;
+            RaiseDraft();
         }
 
         public bool DraftStrict
@@ -348,7 +376,8 @@ namespace Lotus.App
         }
 
         /// <summary>There is nothing to refuse unless something is blocked.</summary>
-        public bool StrictOptionEnabled => draft.Storage == StorageMode.Block || draft.Pnp == PnpMode.Block;
+        public bool StrictOptionEnabled => draft.Storage == StorageMode.Block || draft.Pnp == PnpMode.Block ||
+                                           draft.ApproveInput;
 
         public string StrictHint
         {
@@ -415,17 +444,32 @@ namespace Lotus.App
                 {
                     return "Any keyboard, headset, adapter or other USB device works when plugged in.";
                 }
-                return draft.AllowInput
-                    ? "A USB device only works if it is on the trusted list. Keyboards and mice are the exception."
-                    : "A USB device only works if it is on the trusted list. That includes keyboards and mice.";
+                return draft.Input == InputRule.Trusted
+                    ? "A USB device only works if it is on the trusted list. That includes keyboards and mice."
+                    : "A USB device only works if it is on the trusted list. Keyboards and mice have a rule of their own below.";
             }
         }
 
+        /// <summary>"Trusted only" for keyboards and mice is the rule for other devices, with no exception. It needs that rule.</summary>
         public bool InputOptionEnabled => draft.Pnp == PnpMode.Block;
 
-        public string InputHint => draft.AllowInput
-            ? "Any keyboard or mouse works, so you can always reach this window."
-            : "Stops keyboards that type on their own. Trust your own keyboard and mouse before you apply.";
+        public string InputHint
+        {
+            get
+            {
+                switch (draft.Input)
+                {
+                    case InputRule.Approve:
+                        return "A new keyboard, mouse or other input device waits until you approve it. That stops devices that type on their own. If none works at all, LOTUS lets one in.";
+                    case InputRule.Trusted:
+                        return draft.Pnp == PnpMode.Block
+                            ? "Keyboards and mice need trust like every other device, with no exception. Trust your own before you apply."
+                            : "Has no effect while PnP devices are allowed.";
+                    default:
+                        return "Any keyboard or mouse works, so you can always reach this window. A device that types on its own gets in too.";
+                }
+            }
+        }
 
         public string PendingText => draft.Armed || live.Armed
             ? "You have changes that are not applied yet."
@@ -440,7 +484,9 @@ namespace Lotus.App
             Raise(nameof(StorageBlock));
             Raise(nameof(PnpAllow));
             Raise(nameof(PnpBlock));
-            Raise(nameof(DraftAllowInput));
+            Raise(nameof(InputAlways));
+            Raise(nameof(InputApprove));
+            Raise(nameof(InputTrusted));
             Raise(nameof(DraftStrict));
             Raise(nameof(StrictOptionEnabled));
             Raise(nameof(StrictHint));
@@ -464,6 +510,7 @@ namespace Lotus.App
             to.Storage = from.Storage;
             to.Pnp = from.Pnp;
             to.AllowInput = from.AllowInput;
+            to.ApproveInput = from.ApproveInput;
             to.Strict = from.Strict;
         }
 
@@ -566,14 +613,15 @@ namespace Lotus.App
                     Kind = entry.Kind,
                     Id = entry.Id,
                     Name = string.IsNullOrWhiteSpace(entry.Name) ? "Unnamed device" : entry.Name,
-                    KindText = entry.Kind == TrustKind.Vendor ? "WHOLE VENDOR"
+                    KindText = entry.LetIn ? "NOT APPROVED"
+                        : entry.Kind == TrustKind.Vendor ? "WHOLE VENDOR"
                         : entry.Kind == TrustKind.Model ? "WHOLE MODEL" : "THIS DEVICE",
                     Added = "added " + entry.AddedUtc.ToLocalTime().ToString("dd MMM yyyy", CultureInfo.InvariantCulture),
                     Connected = lastDevices.Any(s => entry.Matches(s.Device)),
                     Until = entry.UntilText()
                 });
             }
-            string signature = string.Join("|", rows.Select(r => r.Kind + r.Id + r.Name + r.Connected + r.Until));
+            string signature = string.Join("|", rows.Select(r => r.Kind + r.Id + r.Name + r.Connected + r.Until + r.KindText));
             if (signature == trustSignature) return;
             trustSignature = signature;
             Trusted.Clear();
@@ -621,7 +669,7 @@ namespace Lotus.App
                     : "allowed";
                 string pnp = next.Pnp == PnpMode.Block ? "trusted only" : "allowed";
                 confirm.Intro = "LOTUS will be armed.  Removable storage: " + storage + ".  Other USB devices: " +
-                                pnp + ".";
+                                pnp + "." + (next.ApproveInput ? "  New keyboards and mice wait for approval." : "");
             }
 
             foreach (DeviceStatus status in lastDevices)
@@ -632,7 +680,7 @@ namespace Lotus.App
                 bool working = !device.IsOff;
                 if (decision.IsBlock && working)
                 {
-                    if (decision.Reason == Reason.PnpBlocked)
+                    if (decision.Reason == Reason.PnpBlocked || decision.Reason == Reason.InputWaiting)
                     {
                         plan.TrustCandidates.Add(device);
                         confirm.Untrusted.Add(device.Name);
@@ -658,9 +706,13 @@ namespace Lotus.App
                     : "Trust these " + plan.TrustCandidates.Count + " devices, so they keep working";
                 confirm.Checked = true;
             }
-            if (next.Armed && next.Pnp == PnpMode.Block && !next.AllowInput)
+            if (next.Armed && next.Pnp == PnpMode.Block && next.Input == InputRule.Trusted)
             {
                 confirm.Warning = "Keyboards and mice are not exempt. One that is not trusted stops working the moment you apply.";
+            }
+            else if (next.Armed && next.ApproveInput && !live.ApproveInput)
+            {
+                confirm.Warning = "A keyboard or mouse that is not on the trusted list stops working when you apply, and waits for your approval.";
             }
             else if (next.Armed && next.Storage == StorageMode.ReadOnly && live.Storage != StorageMode.ReadOnly)
             {

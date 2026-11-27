@@ -16,6 +16,8 @@ namespace Lotus.Core
         public const string Removed = "removed";
         public const string Blocked = "blocked";
         public const string Released = "released";
+        /// <summary>A keyboard or mouse nobody approved was let in, because no other one was working.</summary>
+        public const string InputLetIn = "input_let_in";
         public const string ReadOnlyOn = "readonly_on";
         public const string ReadOnlyOff = "readonly_off";
         public const string Warning = "warning";

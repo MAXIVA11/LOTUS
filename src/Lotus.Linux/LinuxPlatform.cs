@@ -155,6 +155,16 @@ namespace Lotus.Linux
             }
         }
 
+        /// <summary>Tests point this at a file of their own, in place of the kernel's list of input devices.</summary>
+        public string InputDevicesPath;
+
+        public override bool OtherInputWorks()
+        {
+            // The kernel's list only means something next to the real device tree.
+            string path = InputDevicesPath ?? (sysfsRoot == LinuxDeviceBackend.DefaultRoot ? LinuxInput.DevicesFile : null);
+            return LinuxInput.FindBesidesUsb(path).Count > 0;
+        }
+
         public override ISystemLog CreateSystemLog()
         {
             // Only the daemon on the real device tree writes there. Tests and rehearsals do not.

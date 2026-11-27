@@ -62,10 +62,15 @@ namespace Lotus.Core
         }
 
         /// <summary>The IDs to refuse under these settings, or null when nothing is to be refused.</summary>
-        public static List<string> DenyFor(bool armedAndStrict, bool storageBlocked, bool pnpBlocked)
+        /// <param name="inputWaits">
+        /// New keyboards and mice wait for approval. An input function can sit in
+        /// any device, so every new device is held and the allowed ones are let in.
+        /// </param>
+        public static List<string> DenyFor(bool armedAndStrict, bool storageBlocked, bool pnpBlocked,
+            bool inputWaits = false)
         {
             if (!armedAndStrict) return null;
-            if (pnpBlocked) return EveryUsbDevice();
+            if (pnpBlocked || inputWaits) return EveryUsbDevice();
             if (storageBlocked) return UsbStorage();
             return null;
         }

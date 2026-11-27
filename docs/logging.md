@@ -27,6 +27,7 @@ The numbers stay the same from version to version. A new kind of event gets a ne
 | 2001 | `removed` | Information | A USB device was unplugged |
 | 2100 | `blocked` | Warning | A device was blocked |
 | 2101 | `released` | Information | A blocked device was switched back on |
+| 2102 | `input_let_in` | Warning | A keyboard or mouse nobody approved was let in, because no other one was working |
 | 2200 | `readonly_on` | Information | Read-only mode for storage came on |
 | 2201 | `readonly_off` | Information | Read-only mode for storage was lifted |
 | 3000 | `warning` | Warning | Something did not work the first time |

@@ -124,12 +124,13 @@ namespace Lotus.Linux.Tui
             to.Storage = from.Storage;
             to.Pnp = from.Pnp;
             to.AllowInput = from.AllowInput;
+            to.ApproveInput = from.ApproveInput;
             to.Strict = from.Strict;
         }
 
         private bool HasChanges => live != null && !draft.SettingsEqual(live.Policy);
-        private bool StrictOptionEnabled => draft.Storage == StorageMode.Block || draft.Pnp == PnpMode.Block;
-        private bool InputOptionEnabled => draft.Pnp == PnpMode.Block;
+        private bool StrictOptionEnabled => draft.Storage == StorageMode.Block || draft.Pnp == PnpMode.Block ||
+                                            draft.ApproveInput;
 
         private void Say(string text, int color = Palette.Cyan)
         {
@@ -247,7 +248,6 @@ namespace Lotus.Linux.Tui
 
         private bool FocusUsable(int item)
         {
-            if (item == FocusInput) return InputOptionEnabled;
             if (item == FocusStrict) return StrictOptionEnabled;
             return true;
         }
@@ -290,7 +290,8 @@ namespace Lotus.Linux.Tui
                     if (side != 0) draft.Pnp = draft.Pnp == PnpMode.Allow ? PnpMode.Block : PnpMode.Allow;
                     break;
                 case FocusInput:
-                    if (act || side != 0) draft.AllowInput = !draft.AllowInput;
+                    if (act) side = 1;
+                    if (side != 0) draft.Input = (InputRule)(((int)draft.Input + side + 3) % 3);
                     break;
                 case FocusStrict:
                     if (act || side != 0) draft.Strict = !draft.Strict;
@@ -332,7 +333,8 @@ namespace Lotus.Linux.Tui
                 string storage = next.Storage == StorageMode.Block ? "blocked"
                     : next.Storage == StorageMode.ReadOnly ? "read-only" : "allowed";
                 confirm.Intro = "LOTUS will be armed.  Removable storage: " + storage + ".  Other USB devices: " +
-                                (next.Pnp == PnpMode.Block ? "trusted only" : "allowed") + ".";
+                                (next.Pnp == PnpMode.Block ? "trusted only" : "allowed") + "." +
+                                (next.ApproveInput ? "  New keyboards and mice wait for approval." : "");
             }
 
             var candidates = new List<UsbDevice>();
@@ -348,7 +350,7 @@ namespace Lotus.Linux.Tui
                 if (decision.IsBlock && device.Started)
                 {
                     off.Add(device);
-                    if (decision.Reason == Reason.PnpBlocked)
+                    if (decision.Reason == Reason.PnpBlocked || decision.Reason == Reason.InputWaiting)
                     {
                         candidates.Add(device);
                         untrusted.Add(device.Name);
@@ -389,9 +391,13 @@ namespace Lotus.Linux.Tui
                     : "Trust these " + candidates.Count + " devices, so they keep working";
                 confirm.Checked = true;
             }
-            if (next.Armed && next.Pnp == PnpMode.Block && !next.AllowInput)
+            if (next.Armed && next.Pnp == PnpMode.Block && next.Input == InputRule.Trusted)
             {
                 confirm.Warning = "Keyboards and mice are not exempt. One that is not trusted stops working the moment you apply.";
+            }
+            else if (next.Armed && next.ApproveInput && !live.Policy.ApproveInput)
+            {
+                confirm.Warning = "A keyboard or mouse that is not on the trusted list stops working when you apply, and waits for your approval.";
             }
             else if (next.Armed && next.Storage == StorageMode.ReadOnly && live.Policy.Storage != StorageMode.ReadOnly)
             {
@@ -758,21 +764,28 @@ namespace Lotus.Linux.Tui
             c.Text(px, rules + 1, Canvas.Shorten("Every other device on a USB port.", w - px - 4, unicode), Palette.Dim);
             DrawChoice(c, px, rules + 2, focus == FocusPnp, new[] { "ALLOW", "TRUSTED ONLY" },
                 draft.Pnp == PnpMode.Allow ? 0 : 1, new[] { Palette.Green, Palette.Pink });
+            // Two lines of explanation: for the rule above, or for keyboards and mice while that choice is marked.
             string pnpHint = draft.Pnp == PnpMode.Allow
-                ? "Any keyboard, headset, adapter or other USB device works when plugged in."
-                : draft.AllowInput
-                    ? "A USB device only works if it is on the trusted list. Keyboards and mice are the exception."
-                    : "A USB device only works if it is on the trusted list. That includes keyboards and mice.";
-            DrawLines(c, px, rules + 4, w - px - 4, 3, pnpHint, Palette.Text);
-            DrawCheck(c, px, rules + 7, focus == FocusInput, draft.AllowInput, InputOptionEnabled,
-                "Keep keyboards and mice working");
+                ? "Any other USB device works when it is plugged in."
+                : "Only devices on the trusted list work.";
+            string inputHint = draft.Input == InputRule.Approve
+                ? "A new keyboard or mouse waits until you approve it."
+                : draft.Input == InputRule.Trusted
+                    ? draft.Pnp == PnpMode.Block
+                        ? "Keyboards and mice need trust like any other device."
+                        : "No effect while other devices are allowed."
+                    : "Any keyboard or mouse works, also one that types on its own.";
+            DrawLines(c, px, rules + 4, w - px - 4, 2, focus == FocusInput ? inputHint : pnpHint, Palette.Text);
+            c.Text(px, rules + 6, "KEYBOARDS AND MICE", Palette.Dim);
+            DrawChoice(c, px, rules + 7, focus == FocusInput, new[] { "ALWAYS", "APPROVE", "TRUSTED" },
+                (int)draft.Input, new[] { Palette.Green, Palette.Yellow, Palette.Pink });
 
             // ----- strict mode -----
             int strict = rules + 9;
             c.Fill(1, strict, w - 2, 2, Palette.Panel);
             DrawCheck(c, left, strict, focus == FocusStrict, draft.Strict, StrictOptionEnabled,
                 "Refuse new devices before they start");
-            string strictHint = !StrictOptionEnabled ? "Applies when storage is blocked or devices are trusted only."
+            string strictHint = !StrictOptionEnabled ? "Applies when something is blocked or has to be approved."
                 : !draft.Strict ? "Off: a blocked device runs until LOTUS has switched it off."
                 : live.Strict == "foreign" && live.Policy.Armed && live.Policy.Strict
                     ? "Another program holds the USB controllers shut, so LOTUS cannot. Blocked devices are switched off after they start."
@@ -810,8 +823,10 @@ namespace Lotus.Linux.Tui
             string storage = policy.Storage == StorageMode.Block ? "Storage blocked."
                 : policy.Storage == StorageMode.ReadOnly ? "Storage read-only." : "Storage allowed.";
             string devices = policy.Pnp == PnpMode.Allow ? "Other USB devices allowed."
-                : policy.AllowInput ? "Only trusted devices work, plus keyboards and mice."
+                : policy.Input == InputRule.Always ? "Only trusted devices work, plus keyboards and mice."
+                : policy.Input == InputRule.Approve ? "Only trusted devices work."
                 : "Only trusted devices work, keyboards and mice included.";
+            if (policy.ApproveInput) devices += " New keyboards and mice wait for approval.";
             return storage + " " + devices;
         }
 
@@ -894,10 +909,20 @@ namespace Lotus.Linux.Tui
                     case DeviceState.Blocking:
                         label = "BLOCKED";
                         color = Palette.Pink;
+                        if (status.Decision.Reason == Reason.InputWaiting)
+                        {
+                            label = "PENDING";
+                            color = Palette.Yellow;
+                        }
                         break;
                     case DeviceState.Trusted:
                         label = "TRUSTED";
                         color = Palette.Cyan;
+                        if (status.Decision.Trust != null && status.Decision.Trust.LetIn)
+                        {
+                            label = "LET IN";
+                            color = Palette.Yellow;
+                        }
                         break;
                     case DeviceState.OffElsewhere:
                         label = "OFF";
@@ -962,7 +987,8 @@ namespace Lotus.Linux.Tui
                 if (selected) c.Text(2, y, G("▶", ">"), Palette.Yellow, bg, true);
                 c.Text(4, y, Canvas.Shorten(string.IsNullOrWhiteSpace(entry.Name) ? "Unnamed device" : entry.Name, w - 26, unicode),
                     Palette.Text, bg, true);
-                c.TextRight(w - 4, y, " " + KindLabel(entry.Kind) + " ", Palette.Ink, Palette.Cyan, true);
+                c.TextRight(w - 4, y, " " + (entry.LetIn ? "NOT APPROVED" : KindLabel(entry.Kind)) + " ", Palette.Ink,
+                    entry.LetIn ? Palette.Yellow : Palette.Cyan, true);
                 bool connected = live.Devices.Any(d => entry.Matches(d.Device));
                 string status = connected ? "CONNECTED" : "NOT CONNECTED";
                 c.TextRight(w - 4, y + 1, status, connected ? Palette.Green : Palette.Dim, bg);

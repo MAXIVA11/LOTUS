@@ -71,11 +71,24 @@ For each device, in this order:
 2. The system runs from a disk behind this device: allow.
 3. The device is on the trusted list, and does nothing it did not do when it was trusted: allow.
 4. It has storage and storage is set to Block: block.
-5. PnP devices are set to Trusted only and the device does something besides storage:
+5. Keyboards and mice are set to Approve new, the device has an input function and it is not built into the computer: block, with the reason "waiting for approval".
+6. PnP devices are set to Trusted only and the device does something besides storage:
    - Windows reports it as built into the computer and its port is not one you can plug things into (a laptop webcam, for example): allow.
-   - "Keep keyboards and mice working" is on and everything else it does is input: allow.
+   - Keyboards and mice are set to Always work and everything else it does is input: allow.
    - Otherwise: block.
-6. Allow.
+7. Allow.
+
+The picture shows the five checks every policy has. Step 5 of this list is the extra one for Approve new.
+
+### When no keyboard or mouse works
+
+Approve new has a safety net, and the service loop is where it lives. After every pass the service looks at what it found:
+
+- An approved input device works if a USB device with an input function is running and is trusted or built in. A keyboard or mouse that is not a USB device counts too: the service asks Windows for the keyboards and mice it has, leaves out the USB ones and the ones that exist in software only, such as the keyboard Remote Desktop adds, and counts the rest. On Linux it reads the kernel's list in `/proc/bus/input/devices` the same way.
+- If none works and an input device is waiting, a clock starts. After 15 seconds without an approved one, the service puts one waiting device on the trusted list with the mark "let in". A plain keyboard or mouse is chosen before a device that is something else as well.
+- As soon as an approved one works again, or the device is unplugged, or the rule is switched off, the service takes that entry off the list. Trusting the device replaces the entry with an ordinary one, which is how it is approved.
+
+The 15 seconds give the approved keyboard time to come up when the computer starts.
 
 The same function runs in the service, in the app (to show what would happen before you apply a change) and in the unit tests.
 

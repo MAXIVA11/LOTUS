@@ -38,6 +38,7 @@ namespace Lotus.Core
         public const int Removed = 2001;
         public const int Blocked = 2100;
         public const int Released = 2101;
+        public const int InputLetIn = 2102;
         public const int ReadOnlyOn = 2200;
         public const int ReadOnlyOff = 2201;
         public const int Warning = 3000;
@@ -61,6 +62,7 @@ namespace Lotus.Core
                 case EventTypes.Removed: return Removed;
                 case EventTypes.Blocked: return Blocked;
                 case EventTypes.Released: return Released;
+                case EventTypes.InputLetIn: return InputLetIn;
                 case EventTypes.ReadOnlyOn: return ReadOnlyOn;
                 case EventTypes.ReadOnlyOff: return ReadOnlyOff;
                 case EventTypes.Warning: return Warning;
@@ -76,6 +78,7 @@ namespace Lotus.Core
             switch (type)
             {
                 case EventTypes.Blocked:
+                case EventTypes.InputLetIn:
                 case EventTypes.Warning:
                 case EventTypes.Security:
                     return EventLevel.Warning;

@@ -107,6 +107,303 @@ namespace Lotus.Linux.Tests
         }
     }
 
+    /// <summary>Which keyboards and mice the kernel has besides the USB ones.</summary>
+    public class LinuxInputTests
+    {
+        // What a laptop with a USB keyboard plugged in shows, shortened to the lines that matter.
+        private const string Laptop = @"I: Bus=0019 Vendor=0000 Product=0001 Version=0000
+N: Name=""Power Button""
+P: Phys=PNP0C0C/button/input0
+S: Sysfs=/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0C0C:00/input/input0
+H: Handlers=kbd event0
+B: PROP=0
+B: EV=3
+B: KEY=10000000000000 0
+
+I: Bus=0011 Vendor=0001 Product=0001 Version=ab41
+N: Name=""AT Translated Set 2 keyboard""
+P: Phys=isa0060/serio0/input0
+S: Sysfs=/devices/platform/i8042/serio0/input/input3
+H: Handlers=sysrq kbd event3 leds
+B: PROP=0
+B: EV=120013
+B: KEY=402000000 3803078f800d001 feffffdfffefffff fffffffffffffffe
+B: MSC=10
+B: LED=7
+
+I: Bus=0018 Vendor=04f3 Product=3134 Version=0100
+N: Name=""ELAN0501:00 04F3:3134 Touchpad""
+S: Sysfs=/devices/pci0000:00/0000:00:15.0/i2c_designware.0/i2c-1/i2c-ELAN0501:00/0018:04F3:3134.0001/input/input10
+H: Handlers=mouse0 event5
+B: EV=1b
+
+I: Bus=0003 Vendor=1a2c Product=2d23 Version=0110
+N: Name=""USB Keyboard""
+S: Sysfs=/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0/0003:1A2C:2D23.0002/input/input12
+H: Handlers=sysrq kbd event7 leds
+B: EV=120013
+B: KEY=1000000000007 ff9f207ac14057ff febeffdfffefffff fffffffffffffffe
+
+I: Bus=0006 Vendor=0001 Product=0001 Version=0001
+N: Name=""A keyboard made by a program""
+S: Sysfs=/devices/virtual/input/input20
+H: Handlers=sysrq kbd event9
+B: EV=120013
+B: KEY=402000000 3803078f800d001 feffffdfffefffff fffffffffffffffe
+";
+
+        [Fact]
+        public void A_laptop_has_its_keyboard_and_its_touchpad()
+        {
+            List<string> found = LinuxInput.Parse(Laptop);
+            Assert.Equal(new[] { "AT Translated Set 2 keyboard", "ELAN0501:00 04F3:3134 Touchpad" }, found.ToArray());
+        }
+
+        [Fact]
+        public void The_power_button_is_not_a_keyboard_although_the_kernel_lists_it_as_one()
+        {
+            Assert.DoesNotContain("Power Button", LinuxInput.Parse(Laptop));
+        }
+
+        [Fact]
+        public void A_usb_keyboard_is_left_to_the_usb_rules_and_one_made_by_a_program_does_not_count()
+        {
+            List<string> found = LinuxInput.Parse(Laptop);
+            Assert.DoesNotContain("USB Keyboard", found);
+            Assert.DoesNotContain("A keyboard made by a program", found);
+        }
+
+        [Fact]
+        public void A_keyboard_over_bluetooth_counts()
+        {
+            const string bluetooth = @"I: Bus=0005 Vendor=046d Product=b342 Version=0001
+N: Name=""Keys-To-Go""
+S: Sysfs=/devices/virtual/misc/uhid/0005:046D:B342.0004/input/input22
+H: Handlers=sysrq kbd event11 leds
+B: EV=120013
+B: KEY=1000000000007 ff9f207ac14057ff febeffdfffefffff fffffffffffffffe
+";
+            // Bluetooth devices come in through a kernel part whose path says "virtual". The bus says what they are.
+            Assert.Equal(new[] { "Keys-To-Go" }, LinuxInput.Parse(bluetooth).ToArray());
+        }
+
+        [Fact]
+        public void A_desktop_with_usb_devices_only_has_none()
+        {
+            const string desktop = @"I: Bus=0019 Vendor=0000 Product=0001 Version=0000
+N: Name=""Power Button""
+S: Sysfs=/devices/LNXSYSTM:00/LNXPWRBN:00/input/input1
+H: Handlers=kbd event1
+B: EV=3
+B: KEY=10000000000000 0
+
+I: Bus=0003 Vendor=046d Product=c542 Version=0111
+N: Name=""Logitech Wireless Receiver Mouse""
+S: Sysfs=/devices/pci0000:00/0000:00:14.0/usb1/1-5/1-5:1.0/0003:046D:C542.0003/input/input14
+H: Handlers=mouse1 event8
+B: EV=17
+";
+            Assert.Empty(LinuxInput.Parse(desktop));
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData(null)]
+        [InlineData("garbage\n\n\nI: Bus=zzzz\nH: Handlers=kbd\nB: KEY=nothex")]
+        [InlineData("I: Bus=0011\nH: Handlers=kbd\nB: KEY=")]
+        [InlineData("H: Handlers=kbd mouse0\nB: KEY=ffffffffffffffff")]
+        public void Text_that_is_not_the_kernels_list_gives_nothing_and_does_not_fail(string text)
+        {
+            Assert.Empty(LinuxInput.Parse(text));
+        }
+
+        [Fact]
+        public void A_file_that_is_not_there_means_no_such_device()
+        {
+            Assert.Empty(LinuxInput.FindBesidesUsb(Path.Combine(Path.GetTempPath(), "lotus-no-input-" + Guid.NewGuid().ToString("N"))));
+            Assert.Empty(LinuxInput.FindBesidesUsb(null));
+        }
+
+        [Fact]
+        public void The_platform_asks_the_file_it_is_given()
+        {
+            string file = Path.Combine(Path.GetTempPath(), "lotus-input-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                File.WriteAllText(file, Laptop);
+                Assert.True(new LinuxPlatform("/nowhere") { InputDevicesPath = file }.OtherInputWorks());
+                File.WriteAllText(file, "");
+                Assert.False(new LinuxPlatform("/nowhere") { InputDevicesPath = file }.OtherInputWorks());
+                // A made-up device tree has no kernel list next to it.
+                Assert.False(new LinuxPlatform("/nowhere").OtherInputWorks());
+            }
+            finally
+            {
+                File.Delete(file);
+            }
+        }
+    }
+
+    /// <summary>"New keyboards and mice wait for approval" through the real service loop on a made-up device tree.</summary>
+    public class ApproveInputDaemonTests : IDisposable
+    {
+        private readonly FakeSysfs sys = new FakeSysfs();
+        private readonly string folder = Path.Combine(Path.GetTempPath(), "lotus-input-" + Guid.NewGuid().ToString("N"));
+        private readonly string socket =
+            Path.Combine(Path.GetTempPath(), "lotus-i-" + Guid.NewGuid().ToString("N").Substring(0, 12) + ".sock");
+        private readonly string kernelList;
+        private GuardWorker worker;
+        private TimeSpan ahead = TimeSpan.Zero;
+
+        private const string LaptopKeyboard = "I: Bus=0011 Vendor=0001 Product=0001 Version=ab41\n" +
+                                              "N: Name=\"AT Translated Set 2 keyboard\"\n" +
+                                              "S: Sysfs=/devices/platform/i8042/serio0/input/input3\n" +
+                                              "H: Handlers=sysrq kbd event3 leds\n" +
+                                              "B: EV=120013\n" +
+                                              "B: KEY=402000000 3803078f800d001 feffffdfffefffff fffffffffffffffe\n\n";
+
+        public ApproveInputDaemonTests()
+        {
+            LotusPaths.OverrideDataDir(folder);
+            Directory.CreateDirectory(folder);
+            kernelList = Path.Combine(folder, "input-devices");
+            File.WriteAllText(kernelList, "");
+        }
+
+        public void Dispose()
+        {
+            worker?.Dispose();
+            LotusPaths.OverrideDataDir(null);
+            sys.Dispose();
+            try
+            {
+                if (Directory.Exists(folder)) Directory.Delete(folder, true);
+                if (File.Exists(socket)) File.Delete(socket);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+            }
+        }
+
+        private UnixControlClient Start()
+        {
+            worker = new GuardWorker(new GuardOptions
+            {
+                Platform = new LinuxPlatform(sys.Root, Path.Combine(folder, "99-lotus-readonly.rules")) { InputDevicesPath = kernelList },
+                PipeName = socket,
+                AdministratorsOnly = false,
+                Clock = () => DateTime.UtcNow + ahead
+            });
+            worker.Start();
+            Assert.True(worker.WaitUntilReady(10000), "the service loop did not come up");
+            return new UnixControlClient(socket);
+        }
+
+        private List<LotusEvent> Events()
+        {
+            return new ActivityLog(LotusPaths.EventsFile, LotusPaths.OldEventsFile).ReadRecent(1000);
+        }
+
+        private bool Becomes(string device, string value)
+        {
+            return Wait.Until(() => sys.Authorized(device) == value);
+        }
+
+        [Fact]
+        public void A_new_keyboard_is_switched_off_although_every_other_device_is_allowed()
+        {
+            sys.PlugStick();
+            sys.PlugKeyboard();
+            sys.PlugPrinter();
+            UnixControlClient client = Start();
+            Assert.True(client.Apply(new Policy { Armed = true, Input = InputRule.Approve }).Ok);
+
+            Assert.True(Becomes("1-1", "0"));
+            Thread.Sleep(400);
+            Assert.Equal("1", sys.Authorized("1-2")); // the stick
+            Assert.Equal("1", sys.Authorized("2-2")); // the printer
+            Assert.Contains(Events(), e => e.Type == EventTypes.Blocked && e.Message.Contains("nobody has approved it yet"));
+        }
+
+        [Fact]
+        public void Trusting_it_switches_it_on()
+        {
+            sys.PlugKeyboard();
+            UnixControlClient client = Start();
+            var policy = new Policy { Armed = true, Input = InputRule.Approve };
+            Assert.True(client.Apply(policy).Ok);
+            Assert.True(Becomes("1-1", "0"));
+
+            Policy next = client.Read().ReadPolicy();
+            var backend = new LinuxDeviceBackend(sys.Root, () => new HashSet<string>()) { IsBlockedByLotus = id => true };
+            next.AddTrust(TrustEntry.ForDevice(backend.Scan().Single()));
+            Assert.True(client.Apply(next).Ok);
+            Assert.True(Becomes("1-1", "1"));
+        }
+
+        [Fact]
+        public void On_a_laptop_which_has_a_keyboard_of_its_own_nothing_is_let_in()
+        {
+            File.WriteAllText(kernelList, LaptopKeyboard);
+            sys.PlugKeyboard();
+            UnixControlClient client = Start();
+            Assert.True(client.Apply(new Policy { Armed = true, Input = InputRule.Approve }).Ok);
+            Assert.True(Becomes("1-1", "0"));
+
+            ahead = TimeSpan.FromMinutes(10);
+            worker.Kick();
+            Thread.Sleep(900);
+            Assert.Equal("0", sys.Authorized("1-1"));
+            Assert.Empty(client.Read().ReadPolicy().Trusted);
+        }
+
+        [Fact]
+        public void On_a_computer_with_nothing_else_to_type_on_the_keyboard_is_let_in_after_a_while_and_marked()
+        {
+            sys.PlugKeyboard();
+            UnixControlClient client = Start();
+            Assert.True(client.Apply(new Policy { Armed = true, Input = InputRule.Approve }).Ok);
+            Assert.True(Becomes("1-1", "0"));
+            worker.Kick();
+            Thread.Sleep(500);
+            Assert.Equal("0", sys.Authorized("1-1"));
+
+            ahead = GuardWorker.NoInputHold + TimeSpan.FromSeconds(5);
+            worker.Kick();
+
+            Assert.True(Becomes("1-1", "1"));
+            TrustEntry entry = client.Read().ReadPolicy().Trusted.Single();
+            Assert.True(entry.LetIn);
+            Assert.Contains(Events(), e => e.Type == EventTypes.InputLetIn);
+
+            // The laptop's own keyboard comes back, say after a docking station is opened. The other waits again.
+            File.WriteAllText(kernelList, LaptopKeyboard);
+            worker.Kick();
+            Assert.True(Becomes("1-1", "0"));
+            Assert.Empty(client.Read().ReadPolicy().Trusted);
+        }
+
+        [Fact]
+        public void With_strict_mode_a_new_keyboard_never_runs_and_a_new_stick_is_let_in()
+        {
+            UnixControlClient client = Start();
+            Assert.True(client.Apply(new Policy { Armed = true, Input = InputRule.Approve, Strict = true }).Ok);
+            Assert.True(Wait.Until(() => sys.Default("usb1") == "0"));
+
+            // What the kernel does with a shut controller: the device is there and is not switched on.
+            sys.PlugKeyboard();
+            sys.SetAuthorized("1-1", "0");
+            sys.PlugStick();
+            sys.SetAuthorized("1-2", "0");
+            worker.Kick();
+
+            Assert.True(Becomes("1-2", "1"));
+            Thread.Sleep(500);
+            Assert.Equal("0", sys.Authorized("1-1"));
+            Assert.DoesNotContain(Events(), e => e.Type == EventTypes.Released);
+        }
+    }
+
     /// <summary>
     /// The kernel takes a device apart in steps. Its descriptors go a moment
     /// before its folder does, and in between it must not be judged.

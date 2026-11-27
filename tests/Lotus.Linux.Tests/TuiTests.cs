@@ -118,7 +118,9 @@ namespace Lotus.Linux.Tests
             Assert.Contains("Nothing is blocked.", screen);
             Assert.Contains("REMOVABLE STORAGE", screen);
             Assert.Contains("PNP DEVICES", screen);
-            Assert.Contains("[■] Keep keyboards and mice working", screen);
+            Assert.Contains("KEYBOARDS AND MICE", screen);
+            Assert.Contains("ALWAYS", screen);
+            Assert.Contains("APPROVE", screen);
             Assert.Contains("[ ] Refuse new devices before they start", screen);
             Assert.Contains("CONNECTED 3", screen);
             Assert.Contains("BLOCKED 0", screen);
@@ -221,7 +223,7 @@ namespace Lotus.Linux.Tests
             Assert.Contains("You have changes that are not applied yet.", screen);
             Assert.Contains("ON", screen);
             Assert.Contains("in. Devices on the trusted list keep", screen);
-            Assert.Contains("trusted list. Keyboards and mice are the", screen);
+            Assert.Contains("Only devices on the trusted list work.", screen);
             Assert.Empty(daemon.Applied);
             // The status still shows what is in force.
             Assert.Contains("Nothing is blocked.", screen);
@@ -245,20 +247,96 @@ namespace Lotus.Linux.Tests
         public void The_two_boxes_can_only_be_reached_when_they_mean_something()
         {
             Start();
-            // With everything allowed the focus goes from the rules straight to Apply.
-            Press("down down down enter");
+            // With everything allowed the focus skips the box for strict mode and goes to Apply.
+            Press("down down down down enter");
             Assert.Contains("Nothing has changed", Screen());
 
             Start();
-            Press("down right right down right down space down space");
+            // Storage: block. Devices: trusted only. Keyboards and mice: one step left of "always" is "trusted".
+            Press("down right right down right down left down space");
             Press("a");
             string screen = Screen();
             Assert.Contains("APPLY POLICY", screen);
             Press("esc");
             screen = Screen();
-            Assert.Contains("[ ] Keep keyboards and mice working", screen);
             Assert.Contains("[■] Refuse new devices before they start", screen);
-            Assert.Contains("trusted list. That includes keyboards and", screen);
+            Assert.Contains("Only devices on the trusted list work.", screen);
+            // LOTUS is not switched on here, so nothing goes off and the answer that has the focus is Apply.
+            Press("a enter");
+            Policy sent = Assert.Single(daemon.Applied);
+            Assert.Equal(InputRule.Trusted, sent.Input);
+            Assert.True(sent.Strict);
+        }
+
+        [Fact]
+        public void New_keyboards_and_mice_can_be_made_to_wait_and_the_ones_connected_are_offered_for_trust()
+        {
+            Start();
+            // Master switch on. Three steps down to keyboards and mice, one to the right: approve.
+            Press("space down down down");
+            Assert.Contains("Any keyboard or mouse works, also one that", Screen());
+            Press("right");
+            Assert.Contains("A new keyboard or mouse waits until you", Screen());
+            // Strict mode can be chosen now, because there is something to hold back.
+            Press("down space");
+            Assert.Contains("[■] Refuse new devices before they start", Screen());
+
+            Press("a");
+            string screen = Screen();
+            Assert.Contains("New keyboards and mice wait for approval.", screen);
+            Assert.Contains("Connected USB devices that are not trusted yet:", screen);
+            Assert.Contains("USB Keyboard", screen);
+            Assert.Contains("HyperX Cloud III Wireless", screen);
+            Assert.Contains("Trust these 2 devices, so they keep working", screen);
+            Assert.DoesNotContain("SanDisk", screen); // storage is allowed and a stick is not an input device
+
+            Press("left enter");
+            Policy sent = Assert.Single(daemon.Applied);
+            Assert.Equal(InputRule.Approve, sent.Input);
+            Assert.Equal(PnpMode.Allow, sent.Pnp);
+            Assert.True(sent.Strict);
+            Assert.Equal(2, sent.Trusted.Count);
+            Assert.Contains("New keyboards and mice wait for approval.", Screen());
+        }
+
+        [Fact]
+        public void A_keyboard_that_waits_is_marked_pending_and_trusting_it_lets_it_in()
+        {
+            daemon.Policy = new Policy { Armed = true, Input = InputRule.Approve };
+            Start();
+            Press("2");
+            string screen = Screen();
+            Assert.Contains("PENDING", screen);
+            Assert.Contains("ALLOWED", screen); // the stick, which is chosen first
+
+            // The keyboard is the second device, and the line at the bottom explains the one that is chosen.
+            Press("down");
+            Assert.Contains("USB Keyboard", Screen());
+            Assert.Contains("Waiting for approval", Screen());
+            Press("t");
+            Assert.Contains(daemon.Applied.Last().Trusted, e => e.Id == Devices.KeyboardId && !e.LetIn);
+        }
+
+        [Fact]
+        public void A_device_that_was_only_let_in_says_so_and_t_approves_it()
+        {
+            daemon.Policy = new Policy { Armed = true, Input = InputRule.Approve };
+            TrustEntry letIn = TrustEntry.ForDevice(Devices.Keyboard());
+            letIn.LetIn = true;
+            daemon.Policy.AddTrust(letIn);
+            Start();
+            Press("2 down");
+            string screen = Screen();
+            Assert.Contains("LET IN", screen);
+            Press("3");
+            Assert.Contains("NOT APPROVED", Screen());
+
+            Press("2 t");
+            TrustEntry approved = daemon.Applied.Last().Trusted.Single();
+            Assert.Equal(Devices.KeyboardId, approved.Id);
+            Assert.False(approved.LetIn);
+            Press("3");
+            Assert.DoesNotContain("NOT APPROVED", Screen());
         }
 
         [Fact]
@@ -345,7 +423,8 @@ namespace Lotus.Linux.Tests
         public void Switching_keyboards_off_is_warned_about()
         {
             Start();
-            Press("space down down right down space a");
+            // Devices: trusted only. Keyboards and mice: one step left of "always" is "trusted".
+            Press("space down down right down left a");
             Assert.Contains("Keyboards and mice are not exempt.", Screen().Replace("\n", " "));
             Assert.Contains("USB Keyboard", Screen());
         }

@@ -20,6 +20,7 @@
     <Compile Include="..\Lotus.Tests\Devices.cs" Link="Shared\Devices.cs" />
     <Compile Include="..\Lotus.Tests\EnforcerTests.cs" Link="Shared\EnforcerTests.cs" />
     <Compile Include="..\Lotus.Tests\FuzzFindingsTests.cs" Link="Shared\FuzzFindingsTests.cs" />
+    <Compile Include="..\Lotus.Tests\InputApprovalTests.cs" Link="Shared\InputApprovalTests.cs" />
     <Compile Include="..\Lotus.Tests\JsonAndPolicyTests.cs" Link="Shared\JsonAndPolicyTests.cs" />
     <Compile Include="..\Lotus.Tests\SecurityTests.cs" Link="Shared\SecurityTests.cs" />
     <Compile Include="..\Lotus.Tests\StrictModeTests.cs" Link="Shared\StrictModeTests.cs" />

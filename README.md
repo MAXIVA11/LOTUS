@@ -36,11 +36,12 @@ Most of this page describes the Windows version. [Linux](#linux) has a section o
 | --- | --- | --- |
 | Removable storage | Allow, Read-only, Block | USB drives, external disks, card readers, phones and cameras |
 | PnP devices | Allow, Trusted only | Keyboards, mice, headsets, network and Bluetooth adapters, printers, hubs and anything else on USB |
+| Keyboards and mice | Always work, Approve new, Trusted only | Every device that can act as a keyboard or mouse, under either choice for PnP devices |
 | Trusted list | One device, a whole model or a whole vendor | Devices on the list are never blocked |
 
 A device you trust as "this device" is matched by its serial number. A device you trust as "whole model" is matched by vendor and product ID, so every unit of that model works. A "whole vendor" entry is matched by the vendor ID alone and covers everything that vendor makes.
 
-A new installation starts like this: disarmed, removable storage on Allow, PnP devices on Allow, "Keep keyboards and mice working" ticked, "Refuse new devices before they start" not ticked, and an empty trusted list.
+A new installation starts like this: disarmed, removable storage on Allow, PnP devices on Allow, keyboards and mice on Always work, "Refuse new devices before they start" not ticked, and an empty trusted list.
 
 - Setup blocks nothing. LOTUS stays disarmed until you choose a policy and switch it on.
 - Before a policy is applied, LOTUS lists the connected devices it would switch off.
@@ -146,10 +147,24 @@ Whoever is at the PC sees this when a device is blocked:
   <img src="docs/images/toast.png" width="412" alt="The notification shown when a device is blocked">
 </p>
 
-"Keep keyboards and mice working" is on by default. With it on, any keyboard or mouse works even under Trusted only, so you can always reach LOTUS.
+### Keyboards and mice
+
+A device can pose as a keyboard and type commands on its own the moment it is plugged in. Keyboards and mice therefore have a rule of their own, with three choices:
+
+| Choice | What happens |
+| --- | --- |
+| Always work | Any keyboard or mouse works, even under Trusted only, so you can always reach LOTUS. A device that types on its own gets in too. This is how LOTUS starts |
+| Approve new | A new keyboard, mouse or other input device waits until you approve it, whatever PnP devices is set to. The ones on the trusted list work |
+| Trusted only | Keyboards and mice are treated like every other device, with no exception. Only has an effect when PnP devices is set to Trusted only |
+
+When you switch to Approve new, LOTUS offers to put the keyboards and mice that are connected right now on the trusted list, so yours keep working. A new one shows up on the Devices page as WAITING. Press <kbd>Trust device</kbd> there to approve it.
+
+Approve new covers every device with an input function, also a headset with buttons or a stick that is a keyboard as well, because any of them can type. A device built into the computer does not wait.
+
+Approve new cannot lock you out for good. If no keyboard and no mouse works at all, LOTUS waits 15 seconds and then lets one waiting input device in. It is marked NOT APPROVED, the activity log says so, and it waits again as soon as an approved keyboard or mouse works. A laptop's own keyboard and a keyboard on Bluetooth count as working, so on a laptop nothing is let in this way.
 
 > [!WARNING]
-> Turn "Keep keyboards and mice working" off only if you also want to stop devices that pose as keyboards and type on their own. Trust your own keyboard and mouse before you do. If it goes wrong, see [If you lock yourself out](#if-you-lock-yourself-out).
+> Choose Trusted only for keyboards and mice only on a computer where nobody should ever plug in a new one, and trust your own keyboard and mouse first. It has no safety net. If it goes wrong, see [If you lock yourself out](#if-you-lock-yourself-out).
 
 <img src="docs/assets/divider.svg" width="100%" alt="">
 
@@ -161,7 +176,9 @@ LOTUS Guard is a Windows service that runs as SYSTEM. Windows tells it as soon a
   <img src="docs/assets/decision-flow.svg" width="100%" alt="A device on a USB port passes five checks from left to right. If LOTUS is disarmed, if Windows boots from the device, or if the device is on the trusted list, it is allowed. If it has storage and storage is set to block, or if it does anything else and USB devices are set to trusted only, it is blocked. A device that no check stops is allowed.">
 </p>
 
-Check 05 has two exceptions. A device that Windows reports as built into the computer, such as a laptop webcam, is allowed. So is a device whose only other function is input, as long as "Keep keyboards and mice working" is on.
+Check 05 has two exceptions. A device that Windows reports as built into the computer, such as a laptop webcam, is allowed. So is a device whose only other function is input, as long as keyboards and mice are set to Always work.
+
+With keyboards and mice set to Approve new, there is one more check in front of check 05: a device that can act as a keyboard or mouse, and is not built in, waits for approval.
 
 The disabled state belongs to that device, and Windows remembers it. A blocked drive stays off when it is unplugged and plugged back in, after a restart, and while the service is stopped. Devices this PC has seen before, and that the policy blocks, are marked as disabled while they are unplugged, so they are already off when they come back.
 
@@ -180,7 +197,9 @@ The full description is in [docs/how-it-works.md](docs/how-it-works.md).
 ## Limits
 
 - Trust is based on what a device reports about itself. A device built to copy the vendor, product, serial number and functions of a trusted device is treated as that device.
-- With "Keep keyboards and mice working" on, any device that is only a keyboard or mouse works, including one that types on its own.
+- With keyboards and mice set to Always work, which is how LOTUS starts, any device that is only a keyboard or mouse works, including one that types on its own. Approve new stops that.
+- Under Approve new, a computer that has no working keyboard or mouse at all lets one waiting input device in after 15 seconds. On a computer that normally runs without any, such as a server or a kiosk, that is the first one anyone plugs in. Use Trusted only there.
+- When LOTUS puts your connected keyboard on the trusted list for you and the keyboard has no serial number, it trusts the model, because such a keyboard has a different identity in every port. A device built to report the same vendor and product ID is then treated as that keyboard.
 - With "Refuse new devices before they start" off, which is how LOTUS starts, or on a Windows older than Windows 10 21H2, a blocked device this PC has never seen runs for a few milliseconds before LOTUS has it switched off.
 - A trust entry for a whole vendor, or one typed in by hand, is not tied to what the device does. Any device that reports that vendor, model or path is let in.
 - Windows reads the descriptors of every device that is plugged in, blocked or not. A device built to attack the Windows USB drivers through its descriptors is not stopped by LOTUS.
@@ -207,7 +226,7 @@ The policy and the trusted list are kept in an encrypted store, `C:\ProgramData\
 
 ## If you lock yourself out
 
-With "Keep keyboards and mice working" turned off, an untrusted keyboard or mouse is blocked like any other device. If you end up with no working input device:
+With keyboards and mice set to Trusted only, an untrusted keyboard or mouse is blocked like any other device, and nothing lets one in. If you end up with no working input device:
 
 1. Start Windows in Safe Mode. LOTUS Guard does not run there.
 2. Use a keyboard LOTUS has not blocked. For most keyboards a different USB port is enough, because a keyboard without a serial number counts as a new device in each port.

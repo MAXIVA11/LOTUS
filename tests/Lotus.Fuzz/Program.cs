@@ -356,6 +356,8 @@ namespace Lotus.Fuzz
                 Require(entry.Name == TextSafety.Clean(entry.Name), "a name carries no control characters");
                 Require(entry.Functions.Count <= 64, "an entry never holds more than 64 functions");
             }
+            // The two switches for keyboards and mice are never both on.
+            Require(!(policy.ApproveInput && policy.AllowInput), "approving new keyboards and always allowing them do not go together");
             // A policy that was accepted survives being saved and loaded, unchanged.
             string saved = policy.ToJson();
             Policy again = null;
@@ -386,8 +388,10 @@ namespace Lotus.Fuzz
             });
             full.AddTrust(new TrustEntry { Kind = TrustKind.Model, Id = "VID_046D&PID_C52B", Name = "Receiver" });
             full.AddTrust(new TrustEntry { Kind = TrustKind.Vendor, Id = "VID_0403", Name = "Adapters" });
+            var waiting = new Policy { Armed = true, Input = InputRule.Approve, Strict = true };
+            waiting.AddTrust(new TrustEntry { Kind = TrustKind.Device, Id = @"USB\VID_046D&PID_C542&CC3F949&0&5", Name = "Receiver", LetIn = true });
             return Texts(
-                new Policy().ToJson(), full.ToJson(),
+                new Policy().ToJson(), full.ToJson(), waiting.ToJson(),
                 "{\"version\":1,\"armed\":true,\"storage\":\"block\",\"pnp\":\"allow\",\"trusted\":[]}",
                 "{\"armed\":false}",
                 "{\"version\":1,\"armed\":true,\"storage\":\"block\",\"pnp\":\"block\",\"allowInput\":true,\"trusted\":[" +

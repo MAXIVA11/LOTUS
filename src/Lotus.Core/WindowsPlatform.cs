@@ -88,6 +88,11 @@ namespace Lotus.Core
             }
         }
 
+        public override bool OtherInputWorks()
+        {
+            return WindowsInput.FindBesidesUsb().Count > 0;
+        }
+
         public override ISystemLog CreateSystemLog()
         {
             return new WindowsEventLog();

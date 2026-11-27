@@ -26,7 +26,7 @@ The installer copies the program to `/usr/local/bin/lotus`, adds the service `lo
 
 On a new installation the installer asks whether the USB devices that are connected right now should go on the trusted list. The answer is no unless you say yes. `sudo ./install.sh --trust-connected` answers yes in advance and `--no-trust` answers no. Without a terminal nobody is asked.
 
-A new installation starts disarmed, with storage and every other device allowed, keyboards and mice kept working, strict mode off and an empty trusted list.
+A new installation starts disarmed, with storage and every other device allowed, keyboards and mice always working, strict mode off and an empty trusted list.
 
 Running `install.sh` from a newer release updates LOTUS and keeps your policy.
 
@@ -105,7 +105,7 @@ A change that would switch off a device that works right now lists those devices
 | `lotus log [lines]` | The activity log |
 | `lotus storage allow\|readonly\|block` | USB drives, card readers, cameras and phones |
 | `lotus usb allow\|trusted` | Every other USB device: all of them, or only trusted ones |
-| `lotus input on\|off` | Keep keyboards and mice working under `trusted`. On after installation |
+| `lotus input on\|approve\|off` | Keyboards and mice: always work, wait for approval when new, or need trust like any other device. `on` after installation |
 | `lotus strict on\|off` | Hold new devices back before they start. Off after installation |
 | `lotus arm`, `lotus disarm` | Start and stop enforcing |
 | `lotus trust <number\|id>` | Trust one device that is plugged in |
@@ -124,6 +124,8 @@ A change that would switch off a device that works right now lists those devices
 Every command except `version` and `help` needs root, because only root may talk to the daemon.
 
 The three `trust` commands that take a typed value are for a device that need not be plugged in. Add `--name "..."` to give the entry a name. An entry made this way covers the device whatever it does, because LOTUS has not seen it, and a whole vendor also lets in devices you have never seen.
+
+`lotus input approve` makes a new keyboard, mouse or other input device wait until you trust it, whatever `lotus usb` is set to. That stops a device that poses as a keyboard and types on its own. The ones that work at that moment are put on the trusted list in the same step, and `--no-trust` leaves them out. A waiting device shows as PENDING in `lotus devices`, and `lotus trust <number>` approves it. If no keyboard and no mouse works at all, the daemon lets one waiting device in after 15 seconds and marks it NOT APPROVED. The [README](../README.md#keyboards-and-mice) has the details.
 
 `--for` and `--until` work with every `trust` command. A date without a time means the end of that day by the computer's clock. When the time is up, the daemon takes the entry off the list, switches the device off if the policy blocks it, and writes "trust ended" to the log. Given for an entry that is on the list already, they change its end, and `--for never` takes the end away. `lotus trusted` shows the end of every entry that has one.
 
@@ -237,7 +239,7 @@ These come on top of the [limits that apply everywhere](../README.md#limits).
 
 ## If you lock yourself out
 
-With `lotus input off`, an untrusted keyboard is blocked like any other device.
+With `lotus input off` and `lotus usb trusted`, an untrusted keyboard is blocked like any other device, and nothing lets one in. `lotus input approve` has a safety net and cannot do this.
 
 - A laptop's own keyboard is usually not a USB device and keeps working.
 - Over the network nothing changes: `ssh` in and run `sudo lotus release-all`.
@@ -288,6 +290,8 @@ lotus --sysfs ./fake-sys --state ./state --socket ./lotus.sock status
 - removal leaves no file and no device switched off
 - the interactive interface arms LOTUS, trusts and untrusts a stick and adds a vendor by hand against the real daemon, and on a pseudo terminal it starts, reacts to keys and hands the terminal back
 - trust given for a minute ends by itself: the stick is switched off, the entry is gone, and the log and the journal say so
+- with new keyboards waiting for approval, a second keyboard never runs while every other device is allowed, and approving it switches it on
+- with the machine's own keyboard taken away and no trusted one left, one keyboard is let in after a while and marked, and it waits again once an approved mouse works
 - the journal has the daemon's lines with their event numbers, and `lotus status --json` says what is in force
 - restarted with `usbcore.authorized_default=2`, the kernel holds every device back, LOTUS switches on the ones the policy allows, and a stick it has never seen and the policy blocks never runs, with strict mode off and with it on
 - a machine that itself starts from a USB disk keeps that disk: it is not switched off under any rule, it stays writable in read-only mode, and the machine starts again with read-only mode on

@@ -207,6 +207,7 @@ namespace Lotus.Tests
         [InlineData(EventTypes.Removed, 2001, EventLevel.Information)]
         [InlineData(EventTypes.Blocked, 2100, EventLevel.Warning)]
         [InlineData(EventTypes.Released, 2101, EventLevel.Information)]
+        [InlineData(EventTypes.InputLetIn, 2102, EventLevel.Warning)]
         [InlineData(EventTypes.ReadOnlyOn, 2200, EventLevel.Information)]
         [InlineData(EventTypes.ReadOnlyOff, 2201, EventLevel.Information)]
         [InlineData(EventTypes.Warning, 3000, EventLevel.Warning)]
@@ -224,7 +225,7 @@ namespace Lotus.Tests
         public void No_two_kinds_of_event_share_a_number()
         {
             var types = typeof(EventTypes).GetFields().Select(f => (string)f.GetValue(null)).ToList();
-            Assert.True(types.Count >= 14);
+            Assert.True(types.Count >= 15);
             Assert.Equal(types.Count, types.Select(EventIds.For).Distinct().Count());
             Assert.DoesNotContain(EventIds.Other, types.Select(EventIds.For));
         }

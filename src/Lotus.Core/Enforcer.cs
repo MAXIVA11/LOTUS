@@ -276,7 +276,11 @@ namespace Lotus.Core
         public int MarkAbsent(Policy policy)
         {
             if (policy == null) throw new ArgumentNullException(nameof(policy));
-            if (!policy.Armed || (policy.Storage != StorageMode.Block && policy.Pnp != PnpMode.Block)) return 0;
+            if (!policy.Armed || (policy.Storage != StorageMode.Block && policy.Pnp != PnpMode.Block &&
+                                  !policy.ApproveInput))
+            {
+                return 0;
+            }
 
             DateTime now = clock();
             var candidates = new List<LedgerEntry>();
@@ -645,7 +649,7 @@ namespace Lotus.Core
             try
             {
                 List<string> deny = InstallRules.DenyFor(policy.Armed && policy.Strict,
-                    policy.Storage == StorageMode.Block, policy.Pnp == PnpMode.Block);
+                    policy.Storage == StorageMode.Block, policy.Pnp == PnpMode.Block, policy.ApproveInput);
                 bool owned = gate.Owned;
 
                 if (deny == null)

@@ -72,6 +72,17 @@ namespace Lotus.Core
             return null;
         }
 
+        /// <summary>
+        /// True when a keyboard or mouse that is not a USB device is working: the
+        /// keyboard of a laptop, one on a PS/2 port, one over Bluetooth. LOTUS does
+        /// not manage those, but it needs to know they are there before it decides
+        /// that the computer has no working keyboard or mouse left.
+        /// </summary>
+        public virtual bool OtherInputWorks()
+        {
+            return false;
+        }
+
         /// <summary>Tells the store how to keep its key on this system.</summary>
         public virtual void ConfigureStore(SecureStore store)
         {

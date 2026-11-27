@@ -21,6 +21,7 @@
 #   - what a new installation starts with, and trust entries added by hand
 #     for a vendor, a model and an instance path
 #   - trust that ends by itself, and the copy of the log in the Windows event log
+#   - new keyboards and mice waiting for approval, on a target that is an input device
 #   - an installation that puts the connected devices on the trusted list
 #   - the rescue command, with the service running and without it
 #   - a wrecked store locks LOTUS down, and running setup again resets it
@@ -969,6 +970,58 @@ try {
     $raw = $with.ToJson() -replace '"until": "[^"]*"', '"until": "next week"'
     $refused = (New-Guard).Apply($raw)
     Check 'a policy whose end cannot be read is refused, and never taken as trust without an end' ($raw -like '*next week*' -and -not $refused.Ok -and (Get-Device $Target).state -eq 'Blocked') "code=$($refused.Code) $($refused.Message)"
+    Section 'G. new keyboards and mice wait for approval'
+    $targetKinds = [string](Get-Device $Target).kinds
+    if ($targetKinds -notlike '*Input*') {
+        Say "   skipped: the target is not an input device (kinds=$targetKinds)"
+    }
+    else {
+        # Every other rule is off: storage allowed, other devices allowed, strict mode off.
+        # The target is an input device nobody approved. Everything else is trusted.
+        $approve = New-Policy $true 'Allow' 'Allow' $true @($Target) $false
+        $approve.Input = [Lotus.Core.InputRule]::Approve
+        $t0 = Get-Date
+        $reply = Send-Policy $approve
+        $waits = $reply.Ok -and (Wait-Until { (Get-Device $Target).state -eq 'Blocked' } 20)
+        $d = Get-Device $Target
+        Check 'with every other device allowed, the target still waits' $waits "code=$($reply.Code) $($reply.Message) state=$($d.state)"
+        Check 'the scan says it waits for approval' ($d.why -like 'Waiting for approval*') "why=$($d.why)"
+        Check 'it is switched off in Windows' ((Get-PnpDevice -InstanceId $Target -ErrorAction SilentlyContinue).Status -ne 'OK')
+        $kept = Get-Policy
+        Check 'the stored policy has the rule, written so that an older version would read it as closed' ($null -ne $kept -and $kept.ApproveInput -and -not $kept.AllowInput -and $kept.Pnp -eq 'Allow') "approve=$($kept.ApproveInput) allow=$($kept.AllowInput)"
+        $scan = Get-Scan
+        $broken = @($scan.devices | Where-Object { $_.id -ne $Target -and $_.problem -ne 0 })
+        Check 'every other device works' ($broken.Count -eq 0) (($broken | ForEach-Object { "$($_.name)=$($_.state)/$($_.problem)" }) -join ', ')
+        Check 'without strict mode Windows has no installation restrictions' (-not (Test-Path $gateKey))
+        Check 'the scan lists the keyboards and mice that are not USB devices' ($null -ne $scan.PSObject.Properties['otherInput'])
+        Say "   keyboards and mice besides USB on this PC: $(if (@($scan.otherInput).Count) { @($scan.otherInput) -join ', ' } else { 'none' })"
+        Check 'the Windows event log has the block with its reason' (Wait-Until { @(Get-LogEntries 2100 $t0 | Where-Object { $_.Message -like "*$Target*" -and $_.Message -like '*nobody has approved it yet*' }).Count -ge 1 } 10)
+
+        # The safety net must stay shut here: the keyboard and the mouse of this PC are trusted and work.
+        Start-Sleep -Seconds 20
+        $kept = Get-Policy
+        $letIn = @($kept.Trusted | Where-Object { $_.LetIn }).Count
+        Check 'after 20 seconds the target was not let in, because approved ones work' ((Get-Device $Target).state -eq 'Blocked' -and $letIn -eq 0 -and (Count-Events 'input_let_in') -eq 0) "state=$((Get-Device $Target).state) let in=$letIn"
+
+        $entry = $null; $problem = $null
+        [void][Lotus.Core.TrustEntry]::TryParse([Lotus.Core.TrustKind]::Device, $Target, 'e2e approved', [ref]$entry, [ref]$problem)
+        $with = $approve.Clone()
+        [void]$with.AddTrust($entry)
+        $reply = Send-Policy $with
+        Check 'approving the target switches it on' ($reply.Ok -and (Wait-Until { $d = Get-Device $Target; $d.problem -eq 0 -and $d.state -eq 'Trusted' } 25)) "state=$((Get-Device $Target).state)"
+        $reply = Send-Policy $approve
+        Check 'taking the approval away makes it wait again' ($reply.Ok -and (Wait-Until { (Get-Device $Target).state -eq 'Blocked' } 25))
+
+        # With strict mode any new device could be a keyboard, so Windows holds them all and LOTUS lets the allowed ones in.
+        $strictApprove = $approve.Clone()
+        $strictApprove.Strict = $true
+        $reply = Send-Policy $strictApprove
+        $held = $reply.Ok -and (Wait-Until { (Test-Gate) -and (Get-GateList 'DenyDeviceIDs').Count -gt 500 -and (Get-StrictState) -eq 'on' } 15)
+        Check 'with strict mode Windows refuses every new USB device' $held "deny=$((Get-GateList 'DenyDeviceIDs').Count) state=$(Get-StrictState)"
+        $broken = @((Get-Scan).devices | Where-Object { $_.id -ne $Target -and $_.problem -ne 0 })
+        Check 'every other device still works' ($broken.Count -eq 0) (($broken | ForEach-Object { "$($_.name)=$($_.state)/$($_.problem)" }) -join ', ')
+    }
+
     $reply = Send-Policy (New-Policy $false 'Allow' 'Block' $false @($Target))
     Check 'disarmed again, the target works' ($reply.Ok -and (Wait-Until { $d = Get-Device $Target; $d.problem -eq 0 -and $d.state -eq 'Allowed' } 20))
 
@@ -987,6 +1040,12 @@ try {
     # service. Enter is posted to the app's own window, so nothing is typed anywhere else.
     try {
         $main = [System.Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle)
+        $always = Find-Part $main 'InputAlways'
+        $choices = $null -ne $always -and $null -ne (Find-Part $main 'InputApprove') -and $null -ne (Find-Part $main 'InputTrusted')
+        Check 'the control page offers the three choices for keyboards and mice' $choices
+        if ($choices) {
+            Check 'and shows the one in force' ($always.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected -eq (Get-Policy).AllowInput)
+        }
         (Find-Part $main 'NavTrusted').GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
         $shown = Wait-Until { $null -ne (Find-Part $main 'TrustUntil') } 10
         Check 'the trusted page has a field for the end of every entry' $shown

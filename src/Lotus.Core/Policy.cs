@@ -23,6 +23,17 @@ namespace Lotus.Core
         Block
     }
 
+    /// <summary>What happens to keyboards, mice and other input devices.</summary>
+    public enum InputRule
+    {
+        /// <summary>They always work, so nobody is locked out. A device that types on its own gets in too.</summary>
+        Always,
+        /// <summary>The ones on the trusted list work. A new one waits until someone approves it.</summary>
+        Approve,
+        /// <summary>They are treated like every other USB device. Only has an effect when other devices need trust.</summary>
+        Trusted
+    }
+
     public enum TrustKind
     {
         /// <summary>One physical device, matched by its instance ID.</summary>
@@ -56,6 +67,13 @@ namespace Lotus.Core
         /// the entry counts for nothing, and the service takes it off the list.
         /// </summary>
         public DateTime? UntilUtc;
+        /// <summary>
+        /// Set on an entry the service made by itself, for a keyboard or mouse it
+        /// let in without approval because no other one was working. Such an entry
+        /// lasts until an approved keyboard or mouse works again, or until someone
+        /// approves the device, which makes it an ordinary entry.
+        /// </summary>
+        public bool LetIn;
 
         /// <summary>True once the time this entry was given has run out.</summary>
         public bool IsOver(DateTime nowUtc)
@@ -370,6 +388,25 @@ namespace Lotus.Core
         /// </summary>
         public bool AllowInput = true;
         /// <summary>
+        /// A keyboard, mouse or other input device that is not on the trusted list
+        /// waits until someone approves it, whatever the rule for other USB devices
+        /// says. This is what stops a device that poses as a keyboard and types on
+        /// its own. If no keyboard or mouse works at all, the service lets one in,
+        /// so that this cannot lock anyone out.
+        /// </summary>
+        public bool ApproveInput;
+
+        /// <summary>The two switches above as the one choice a person makes.</summary>
+        public InputRule Input
+        {
+            get { return ApproveInput ? InputRule.Approve : AllowInput ? InputRule.Always : InputRule.Trusted; }
+            set
+            {
+                ApproveInput = value == InputRule.Approve;
+                AllowInput = value == InputRule.Always;
+            }
+        }
+        /// <summary>
         /// Has Windows refuse to install USB devices the policy blocks, so that a
         /// device this PC has never seen does not start at all. Devices the policy
         /// allows are let through one by one. Off unless someone chooses it.
@@ -412,14 +449,22 @@ namespace Lotus.Core
             return FindTrust(device) != null;
         }
 
-        /// <summary>Adds a trust entry unless an identical one is already there.</summary>
+        /// <summary>
+        /// Adds a trust entry unless an identical one is already there. An entry
+        /// the service made for a device it let in without approval gives way to
+        /// one a person makes: that is how such a device is approved.
+        /// </summary>
         public bool AddTrust(TrustEntry entry)
         {
             if (entry == null || string.IsNullOrWhiteSpace(entry.Id)) return false;
             entry.Id = NormalizeId(entry.Id);
-            foreach (TrustEntry existing in Trusted)
+            for (int i = 0; i < Trusted.Count; i++)
             {
-                if (existing.Kind == entry.Kind && existing.Id == entry.Id) return false;
+                TrustEntry existing = Trusted[i];
+                if (existing.Kind != entry.Kind || existing.Id != entry.Id) continue;
+                if (!existing.LetIn || entry.LetIn) return false;
+                Trusted[i] = entry;
+                return true;
             }
             Trusted.Add(entry);
             return true;
@@ -454,7 +499,8 @@ namespace Lotus.Core
         public bool SettingsEqual(Policy other)
         {
             return other != null && Armed == other.Armed && Storage == other.Storage &&
-                   Pnp == other.Pnp && AllowInput == other.AllowInput && Strict == other.Strict;
+                   Pnp == other.Pnp && AllowInput == other.AllowInput && ApproveInput == other.ApproveInput &&
+                   Strict == other.Strict;
         }
 
         public Policy Clone()
@@ -466,6 +512,7 @@ namespace Lotus.Core
                 Storage = Storage,
                 Pnp = Pnp,
                 AllowInput = AllowInput,
+                ApproveInput = ApproveInput,
                 Strict = Strict
             };
             foreach (TrustEntry entry in Trusted)
@@ -477,7 +524,8 @@ namespace Lotus.Core
                     Name = entry.Name,
                     AddedUtc = entry.AddedUtc,
                     Functions = new List<string>(entry.Functions),
-                    UntilUtc = entry.UntilUtc
+                    UntilUtc = entry.UntilUtc,
+                    LetIn = entry.LetIn
                 });
             }
             return copy;
@@ -499,6 +547,7 @@ namespace Lotus.Core
                     ["functions"] = new List<object>(entry.Functions)
                 };
                 if (entry.UntilUtc.HasValue) item["until"] = Json.FormatTime(entry.UntilUtc.Value);
+                if (entry.LetIn) item["letIn"] = true;
                 trusted.Add(item);
             }
             var root = new Dictionary<string, object>
@@ -507,7 +556,10 @@ namespace Lotus.Core
                 ["armed"] = Armed,
                 ["storage"] = StorageToText(Storage),
                 ["pnp"] = Pnp == PnpMode.Block ? "block" : "allow",
-                ["allowInput"] = AllowInput,
+                // An older version does not know "approveInput". It reads this as
+                // "keyboards and mice need trust", which is the closest it has.
+                ["allowInput"] = AllowInput && !ApproveInput,
+                ["approveInput"] = ApproveInput,
                 ["strict"] = Strict,
                 ["trusted"] = trusted
             };
@@ -533,6 +585,8 @@ namespace Lotus.Core
             policy.Version = CurrentVersion;
             policy.Armed = RequireBool(root, "armed", false);
             policy.AllowInput = RequireBool(root, "allowInput", true);
+            policy.ApproveInput = RequireBool(root, "approveInput", false);
+            if (policy.ApproveInput) policy.AllowInput = false;
             // Off unless the policy says otherwise, like in a new policy.
             policy.Strict = RequireBool(root, "strict", false);
 
@@ -581,6 +635,7 @@ namespace Lotus.Core
                     }
                     entry.UntilUtc = end;
                 }
+                entry.LetIn = RequireBool(obj, "letIn", false);
                 foreach (object function in Json.GetList(obj, "functions"))
                 {
                     if (function is string code && code.Length > 0 && code.Length <= 8 &&

@@ -1135,6 +1135,8 @@ namespace Lotus.Tests
         private readonly EventIdTests.Recorder systemLog = new EventIdTests.Recorder();
         /// <summary>How far the service's clock runs ahead of the real one.</summary>
         private TimeSpan ahead = TimeSpan.Zero;
+        /// <summary>Whether the computer has a keyboard or mouse that is not a USB device, like a laptop has.</summary>
+        private bool otherInput;
 
         public GuardWorkerTests()
         {
@@ -1166,7 +1168,8 @@ namespace Lotus.Tests
                 WatchDevices = false,
                 TakeResetRequest = () => setupAskedForReset,
                 SystemLog = systemLog,
-                Clock = () => DateTime.UtcNow + ahead
+                Clock = () => DateTime.UtcNow + ahead,
+                OtherInputWorks = () => otherInput
             });
             worker.StopRequested += purpose => { lock (stops) stops.Add(purpose); };
             worker.Start();
@@ -1323,6 +1326,189 @@ namespace Lotus.Tests
             LotusEvent blocked = mirrored.Single(e => e.Type == EventTypes.Blocked);
             Assert.Equal(Devices.StickId, blocked.DeviceId);
             Assert.Equal(EventIds.Blocked, EventIds.For(blocked.Type));
+        }
+
+        // ---------- new keyboards and mice wait for approval ----------
+
+        private static Policy ApproveNew()
+        {
+            return new Policy { Armed = true, Input = InputRule.Approve };
+        }
+
+        private UsbDevice OnBus(string id)
+        {
+            return bus.Scan().Single(d => d.InstanceId == id);
+        }
+
+        private List<TrustEntry> LetIn(GuardClient client)
+        {
+            return client.Read().ReadPolicy().Trusted.FindAll(e => e.LetIn);
+        }
+
+        /// <summary>A mouse nobody approved, on a computer with nothing else to type or click with, until it is let in.</summary>
+        private GuardClient WithAMouseThatWasLetIn()
+        {
+            bus.Plug(Devices.Mouse());
+            GuardClient client = Start();
+            Assert.True(client.Apply(Json(ApproveNew())).Ok);
+            Assert.True(Eventually(() => OnBus(Devices.MouseId).IsOff));
+            ahead = TimeSpan.FromSeconds(20);
+            worker.Kick();
+            Assert.True(Eventually(() => LetIn(client).Count == 1 && !OnBus(Devices.MouseId).IsOff));
+            return client;
+        }
+
+        [Fact]
+        public void A_new_mouse_waits_while_a_trusted_keyboard_works()
+        {
+            bus.Plug(Devices.Keyboard());
+            bus.Plug(Devices.Mouse());
+            GuardClient client = Start();
+            Policy policy = ApproveNew();
+            policy.AddTrust(TrustEntry.ForDevice(Devices.Keyboard()));
+            Assert.True(client.Apply(Json(policy)).Ok);
+
+            Assert.True(Eventually(() => OnBus(Devices.MouseId).IsOff));
+            Assert.False(OnBus(Devices.KeyboardId).IsOff);
+            Assert.Contains(Events(), e => e.Type == EventTypes.Blocked && e.DeviceId == Devices.MouseId &&
+                                           e.Message.Contains("nobody has approved it yet"));
+
+            // However long it waits, it is not let in while something approved works.
+            ahead = TimeSpan.FromMinutes(10);
+            worker.Kick();
+            Thread.Sleep(700);
+            Assert.True(OnBus(Devices.MouseId).IsOff);
+            Assert.Empty(LetIn(client));
+            Assert.DoesNotContain(Events(), e => e.Type == EventTypes.InputLetIn);
+        }
+
+        [Fact]
+        public void With_nothing_to_type_or_click_with_the_first_one_that_waits_is_let_in_after_a_while()
+        {
+            bus.Plug(Devices.Mouse());
+            bus.Plug(Devices.Headset());
+            GuardClient client = Start();
+            Assert.True(client.Apply(Json(ApproveNew())).Ok);
+            Assert.True(Eventually(() => OnBus(Devices.MouseId).IsOff && OnBus(Devices.HeadsetId).IsOff));
+
+            // Not at once: the approved ones get time to come up when the computer starts.
+            worker.Kick();
+            Thread.Sleep(600);
+            Assert.Empty(LetIn(client));
+            Assert.True(OnBus(Devices.HeadsetId).IsOff);
+
+            ahead = GuardWorker.NoInputHold + TimeSpan.FromSeconds(5);
+            worker.Kick();
+            Assert.True(Eventually(() => LetIn(client).Count == 1));
+            // One is enough to reach LOTUS with, and a mouse gets there where a headset with
+            // buttons does not. The headset keeps waiting.
+            TrustEntry entry = LetIn(client).Single();
+            Assert.Equal(Devices.MouseId, entry.Id);
+            Assert.True(Eventually(() => !OnBus(Devices.MouseId).IsOff));
+            Thread.Sleep(600);
+            Assert.True(OnBus(Devices.HeadsetId).IsOff);
+            Assert.Single(LetIn(client));
+
+            LotusEvent logged = Events().Single(e => e.Type == EventTypes.InputLetIn);
+            Assert.Equal(Devices.MouseId, logged.DeviceId);
+            Assert.Contains("let in without approval", logged.Message);
+            Assert.Contains(systemLog.Snapshot(), e => EventIds.For(e.Type) == EventIds.InputLetIn);
+        }
+
+        [Fact]
+        public void The_one_that_was_let_in_waits_again_when_an_approved_one_works()
+        {
+            GuardClient client = WithAMouseThatWasLetIn();
+            Policy policy = client.Read().ReadPolicy();
+            policy.AddTrust(TrustEntry.ForDevice(Devices.Keyboard()));
+            Assert.True(client.Apply(Json(policy)).Ok);
+            Thread.Sleep(400);
+            Assert.False(OnBus(Devices.MouseId).IsOff); // the keyboard is trusted but not here yet
+
+            bus.Plug(Devices.Keyboard());
+            worker.Kick();
+
+            Assert.True(Eventually(() => OnBus(Devices.MouseId).IsOff));
+            Policy now = client.Read().ReadPolicy();
+            Assert.Equal(Devices.KeyboardId, now.Trusted.Single().Id);
+            Assert.Contains(Events(), e => e.Type == EventTypes.PolicyChanged && e.DeviceId == Devices.MouseId &&
+                                           e.Message.Contains("waits for approval again"));
+        }
+
+        [Fact]
+        public void Approving_the_one_that_was_let_in_keeps_it()
+        {
+            GuardClient client = WithAMouseThatWasLetIn();
+            Policy policy = client.Read().ReadPolicy();
+            Assert.True(policy.AddTrust(TrustEntry.ForDevice(Devices.Mouse())));
+            policy.AddTrust(TrustEntry.ForDevice(Devices.Keyboard()));
+            Assert.True(client.Apply(Json(policy)).Ok);
+
+            bus.Plug(Devices.Keyboard());
+            worker.Kick();
+            Thread.Sleep(800);
+
+            Assert.False(OnBus(Devices.MouseId).IsOff);
+            Policy now = client.Read().ReadPolicy();
+            Assert.Equal(2, now.Trusted.Count);
+            Assert.DoesNotContain(now.Trusted, e => e.LetIn);
+        }
+
+        [Fact]
+        public void A_computer_with_a_keyboard_of_its_own_lets_nothing_in()
+        {
+            otherInput = true;
+            bus.Plug(Devices.Mouse());
+            GuardClient client = Start();
+            Assert.True(client.Apply(Json(ApproveNew())).Ok);
+            Assert.True(Eventually(() => OnBus(Devices.MouseId).IsOff));
+
+            ahead = TimeSpan.FromMinutes(10);
+            worker.Kick();
+            Thread.Sleep(700);
+            Assert.True(OnBus(Devices.MouseId).IsOff);
+            Assert.Empty(LetIn(client));
+        }
+
+        [Fact]
+        public void Switching_the_rule_off_takes_the_entry_away()
+        {
+            GuardClient client = WithAMouseThatWasLetIn();
+            Policy policy = client.Read().ReadPolicy();
+            policy.Input = InputRule.Always;
+            Assert.True(client.Apply(Json(policy)).Ok);
+
+            Assert.True(Eventually(() => client.Read().ReadPolicy().Trusted.Count == 0));
+            Assert.False(OnBus(Devices.MouseId).IsOff); // allowed by the policy now, like everything else
+        }
+
+        [Fact]
+        public void When_the_device_is_pulled_out_its_entry_goes_with_it()
+        {
+            GuardClient client = WithAMouseThatWasLetIn();
+            bus.Unplug(Devices.MouseId);
+            worker.Kick();
+            Assert.True(Eventually(() => client.Read().ReadPolicy().Trusted.Count == 0));
+        }
+
+        [Fact]
+        public void A_trusted_mouse_that_is_switched_off_does_not_count_as_working()
+        {
+            bus.Plug(Devices.Mouse());
+            bus.Plug(Devices.Headset());
+            GuardClient client = Start();
+            Policy policy = ApproveNew();
+            policy.AddTrust(TrustEntry.ForDevice(Devices.Mouse()));
+            Assert.True(client.Apply(Json(policy)).Ok);
+            Assert.True(Eventually(() => OnBus(Devices.HeadsetId).IsOff));
+
+            // Someone disables the trusted mouse in Device Manager. Now nothing works.
+            bus.DisableByHand(Devices.MouseId);
+            worker.Kick();
+            Thread.Sleep(400);
+            ahead = GuardWorker.NoInputHold + TimeSpan.FromSeconds(5);
+            worker.Kick();
+            Assert.True(Eventually(() => LetIn(client).Count == 1 && !OnBus(Devices.HeadsetId).IsOff));
         }
 
         [Fact]
