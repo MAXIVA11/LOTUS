@@ -144,14 +144,24 @@ namespace Lotus.Setup
             log(update ? "Updating LOTUS in " + InstallDir : "Installing LOTUS to " + InstallDir);
 
             bool lockdown = IsLockedDown();
-            StopService(GuardProtocol.PurposeUpdate);
-            if (lockdown) AskForReset();
-            StopRunningCopies();
-            CancelPendingDeletes();
-            CopyFiles();
-            PrepareDataFolder();
-            RegisterService();
-            ProtectService();
+            bool hadService = ServiceControl.Exists(ServiceName);
+            try
+            {
+                StopService(GuardProtocol.PurposeUpdate);
+                if (lockdown) AskForReset();
+                StopRunningCopies();
+                CancelPendingDeletes();
+                CopyFiles();
+                PrepareDataFolder();
+                // Registering sets the service back to starting with Windows.
+                RegisterService();
+                ProtectService();
+            }
+            catch (Exception)
+            {
+                if (hadService) PutServiceBack();
+                throw;
+            }
             CreateShortcuts();
             RegisterNotifier();
             RegisterUninstaller();
@@ -549,7 +559,16 @@ namespace Lotus.Setup
             // Over the control channel the service releases every device and erases
             // its own data before it stops. Without the channel, setup does the same
             // by hand.
-            bool releasedByGuard = StopService(GuardProtocol.PurposeUninstall);
+            bool releasedByGuard;
+            try
+            {
+                releasedByGuard = StopService(GuardProtocol.PurposeUninstall);
+            }
+            catch (Exception)
+            {
+                PutServiceBack();
+                throw;
+            }
             if (!releasedByGuard) ReleaseDevices();
             RemoveInstallRestrictions();
             DeleteService();
@@ -784,6 +803,14 @@ namespace Lotus.Setup
         {
             if (!ServiceControl.Exists(ServiceName)) return false;
 
+            // Windows restarts this service when its process dies, up to five
+            // seconds later. If it died a moment ago, that restart would bring
+            // the service back in the middle of setup, right after it stopped.
+            // A service that is switched off cannot be restarted, so switch it
+            // off first. Installing switches it on again, and so does
+            // PutServiceBack when setup fails.
+            KeepServiceFromRestarting();
+
             bool running;
             using (var controller = new ServiceController(ServiceName))
             {
@@ -851,14 +878,42 @@ namespace Lotus.Setup
             }
         }
 
+        private void KeepServiceFromRestarting()
+        {
+            UnprotectService();
+            int code = Run(Path.Combine(Environment.SystemDirectory, "sc.exe"),
+                "config " + ServiceName + " start= disabled", 20000);
+            if (code != 0)
+            {
+                Warn("Could not keep Windows from restarting LOTUS Guard during setup (sc.exe returned " + code + ").");
+            }
+        }
+
         /// <summary>
-        /// Ends a service that cannot be asked to stop. It is switched to "disabled"
-        /// first, or Windows would start it again a second later.
+        /// Setup failed after it had switched the service off. Leave the PC
+        /// protected: the service starts with Windows again, cannot be stopped
+        /// with the Windows tools again, and runs.
         /// </summary>
+        private void PutServiceBack()
+        {
+            try
+            {
+                if (!ServiceControl.Exists(ServiceName)) return;
+                string sc = Path.Combine(Environment.SystemDirectory, "sc.exe");
+                Run(sc, "config " + ServiceName + " start= auto", 20000);
+                Run(sc, "start " + ServiceName, 30000);
+                ProtectService();
+            }
+            catch (Exception)
+            {
+                // The failure that brought setup here is the one worth reporting.
+            }
+        }
+
+        /// <summary>Ends a service that cannot be asked to stop.</summary>
         private void EndServiceProcess()
         {
             string sc = Path.Combine(Environment.SystemDirectory, "sc.exe");
-            Run(sc, "config " + ServiceName + " start= disabled", 20000);
             uint pid = GuardClient.ServiceProcessId();
             if (pid != 0)
             {
