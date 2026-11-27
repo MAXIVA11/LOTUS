@@ -150,12 +150,14 @@ if ! wait_for_ssh 240; then
 fi
 g "cloud-init status --wait >/dev/null 2>&1; uname -r; . /etc/os-release; echo \$PRETTY_NAME"
 
-scp -q "${ssh_options[@]/-p/-P}" -r "$package" lotus@127.0.0.1:release 2>/dev/null \
-    || scp -q -i "$work/key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -r "$package" lotus@127.0.0.1:release
-scp -q -i "$work/key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    "$here/guest-tool.sh" lotus@127.0.0.1:t
-g "sudo install -m 0755 t /usr/local/bin/t"
+# Copies the release and the test's helper into the machine.
+copy_in() {
+    local options=(-q -i "$work/key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+    scp "${options[@]}" -r "$package" lotus@127.0.0.1:release
+    scp "${options[@]}" "$here/guest-tool.sh" lotus@127.0.0.1:t
+    g "sudo install -m 0755 t /usr/local/bin/t"
+}
+copy_in
 
 # The kernel in a cloud image comes without the drivers for USB sticks unless the extra modules are there.
 if ! g "sudo modprobe usb-storage 2>/dev/null"; then
@@ -330,6 +332,7 @@ unplug h1
 section "Read-only storage"
 check "the rule is set" "sudo lotus usb allow && sudo lotus storage readonly && sudo lotus status | grep -q READ-ONLY"
 check "the udev rule is in place" "test -f /etc/udev/rules.d/99-lotus-readonly.rules"
+check "udev finds nothing wrong with the rule" "! udevadm verify --help >/dev/null 2>&1 || udevadm verify /etc/udev/rules.d/99-lotus-readonly.rules"
 check "both sticks are on" "t wait-auth $STICK1 1 && t wait-auth $STICK2 1"
 check "the kernel marks the first disk read-only" "t wait-ro $STICK1 1"
 check "and the second" "t wait-ro $STICK2 1"
@@ -434,6 +437,73 @@ check "the uninstaller switches every device on by itself" "t wait-auth $STICK1 
 check "and opens the controllers" "[ \"\$(t defaults)\" = '1 ' ]"
 check "nothing of LOTUS is left" "! test -e /usr/local/bin/lotus && ! test -e /etc/systemd/system/lotus.service && ! sudo test -e /var/lib/lotus"
 check "the sticks have their disks back" "t wait-block $STICK1 && t wait-block $STICK2"
+
+# ---------------------------------------------------------------- a system on a USB disk
+
+section "A computer that runs from a USB disk"
+# The worst mistake LOTUS could make is to block or write-protect the disk the
+# system itself runs from. This machine starts from an emulated USB disk.
+stop_machine
+sleep 2
+ROOT=LOTUSROOT1
+rm -f "$work/usbroot.qcow2" "$qmp"
+qemu-img create -q -f qcow2 -F qcow2 -b "$image" "$work/usbroot.qcow2" 8G
+printf 'instance-id: lotus-test-usb\nlocal-hostname: lotus-usb\n' > "$work/meta-data"
+cloud-localds "$work/seed2.img" "$work/user-data" "$work/meta-data"
+: > "$work/console.log"
+qemu-system-x86_64 -name lotus-test-usb -machine "q35,accel=$accel" -cpu "$cpu" -smp 2 -m 2048 \
+    -display none -serial "file:$work/console.log" \
+    -drive "if=virtio,format=raw,file=$work/seed2.img" \
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$port-:22" -device virtio-net-pci,netdev=net0 \
+    -device qemu-xhci,id=xhci,p2=12,p3=4 \
+    -blockdev "driver=file,filename=$work/usbroot.qcow2,node-name=rootfile" -blockdev driver=qcow2,file=rootfile,node-name=rootdisk \
+    -device "usb-storage,bus=xhci.0,port=1,drive=rootdisk,serial=$ROOT,bootindex=1" \
+    -blockdev "driver=file,filename=$work/stick1.img,node-name=file1" -blockdev driver=raw,file=file1,node-name=disk1 \
+    -qmp "unix:$qmp,server=on,wait=off" -pidfile "$work/qemu.pid" -daemonize \
+    || bad "QEMU started the second machine"
+
+if wait_for_ssh 300; then
+    ok "the machine starts from the USB disk"
+    g "cloud-init status --wait >/dev/null 2>&1"
+    copy_in
+    check "its root filesystem is on the USB disk" "b=\$(t block $ROOT) && findmnt -n -o SOURCE / | grep -q \"^/dev/\$b\""
+    g "cd release && sudo ./install.sh" 2>&1 | sed 's/^/    /'
+    check "LOTUS says the system runs from that disk" "sudo lotus devices | grep -A1 'QEMU USB HARDDRIVE' | grep -q 'the system runs from it'"
+    plug s1 usb-storage 2 drive=disk1 serial=$STICK1
+    check "a stick is plugged in next to it" "t present $STICK1 && t wait-block $STICK1"
+
+    lost=$(g "sudo lotus storage block --yes >/dev/null; sudo lotus usb trusted --yes >/dev/null; sudo lotus arm --yes" 2>&1)
+    printf '%s\n' "$lost" | sed 's/^/    /'
+    if [ "$(printf '%s\n' "$lost" | grep -c 'QEMU USB HARDDRIVE')" = 1 ]; then
+        ok "arming with everything blocked lists one disk to switch off, the stick"
+    else
+        bad "arming with everything blocked lists one disk to switch off, the stick" "$lost"
+    fi
+    check "the stick is switched off" "t wait-auth $STICK1 0"
+    check "the system's disk stays on and the system keeps running" "sleep 3; t auth $ROOT | grep -qx 1 && sudo touch /var/tmp/written-while-armed"
+    check "LOTUS explains why it leaves that disk alone" "sudo lotus devices | grep -A1 'QEMU USB HARDDRIVE' | grep -q 'the system runs from it'"
+
+    check "read-only mode is switched on" "sudo lotus usb allow && sudo lotus storage readonly && sudo lotus status | grep -q READ-ONLY"
+    check "the stick is read-only" "t wait-auth $STICK1 1 && t wait-ro $STICK1 1"
+    check "the rule names the system's disk as the exception" "grep -q 'ATTRS{serial}==\"$ROOT\"' /etc/udev/rules.d/99-lotus-readonly.rules"
+    check "udev finds nothing wrong with the rule" "! udevadm verify --help >/dev/null 2>&1 || udevadm verify /etc/udev/rules.d/99-lotus-readonly.rules"
+    check "the system's disk is still writable" "[ \"\$(cat /sys/block/\$(t block $ROOT)/ro)\" = 0 ] && sudo touch /var/tmp/written-while-read-only"
+    g "sudo udevadm trigger --action=change --subsystem-match=block; sudo udevadm settle"
+    check "it stays writable when udev goes over every disk again" "[ \"\$(cat /sys/block/\$(t block $ROOT)/ro)\" = 0 ] && sudo touch /var/tmp/written-after-trigger && t wait-ro $STICK1 1 3"
+    check "none of its partitions is read-only either" "! grep -qx 1 /sys/block/\$(t block $ROOT)/*/ro"
+
+    g "sudo systemctl reboot" 2>/dev/null
+    sleep 8
+    if wait_for_ssh 240; then ok "with read-only mode on, the machine starts again from its USB disk"; else bad "with read-only mode on, the machine starts again from its USB disk" "$(tail -n 20 "$work/console.log")"; fi
+    check "the system's disk is writable after the restart" "[ \"\$(cat /sys/block/\$(t block $ROOT)/ro)\" = 0 ] && sudo touch /var/tmp/written-after-restart && ! findmnt -n -o OPTIONS / | grep -qw ro"
+    check "the stick is read-only after the restart" "t wait-ro $STICK1 1 20"
+    check "LOTUS is armed" "sudo lotus status | grep -q ARMED"
+
+    g "sudo lotus-uninstall" 2>&1 | sed 's/^/    /'
+    check "after removal the stick is writable and nothing of LOTUS is left" "t wait-ro $STICK1 0 && ! test -e /usr/local/bin/lotus && ! sudo test -e /var/lib/lotus"
+else
+    bad "the machine starts from the USB disk" "$(tail -n 30 "$work/console.log")"
+fi
 
 # ---------------------------------------------------------------- result
 

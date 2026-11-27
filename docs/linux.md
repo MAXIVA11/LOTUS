@@ -91,6 +91,12 @@ Read-only mode is a udev rule, `/etc/udev/rules.d/99-lotus-readonly.rules`. It m
 
 LOTUS keeps a ledger of the devices it switched off and only ever switches those back on. A device that is off for another reason is left alone.
 
+### The disk the system runs from
+
+A Linux that is installed on a USB disk, or runs live from a stick, depends on that disk. LOTUS works out which USB devices hold the system's own filesystems, also through encrypted and logical volumes, and never switches them off, nor a hub on the way to them. The read-only rule names that disk as an exception, so it stays writable.
+
+If LOTUS cannot work out which disk the system runs from, it leaves every storage device alone and does not switch read-only mode on.
+
 ### What counts as storage
 
 The storage rule covers mass storage devices (USB class 08), which is every stick, external disk and card reader, and devices of the still image class (06), which is how cameras and current phones offer their files. Some older phones and players speak MTP over a vendor specific interface instead. LOTUS recognises those by the shape MTP requires, an interface with subclass FF, protocol 00 and one bulk endpoint in each direction plus an interrupt endpoint, and treats them as phones too.
@@ -183,7 +189,7 @@ lotus --sysfs ./fake-sys --state ./state --socket ./lotus.sock status
 
 `tests/Lotus.Linux.Tests` holds the unit tests. The tests of the shared core run there against the Linux build, and the Linux parts are tested on a made-up device tree: reading devices, the controller switch, the read-only rule, the socket, and the whole daemon from arming to removal.
 
-`tests/linux/vm-test.sh` tests on a real kernel. It boots Ubuntu 24.04 under QEMU, installs LOTUS from the release folder the way a user would, and plugs emulated devices into the machine's USB controller: three sticks, two keyboards, a mouse, a phone, a network adapter, a sound card, a smart card reader, a serial adapter and a hub. After each step it asks the kernel in the machine what happened. It checks, among other things, that:
+`tests/linux/vm-test.sh` tests on a real kernel. It boots Ubuntu 24.04 under QEMU, once from an ordinary disk and once from an emulated USB disk, installs LOTUS from the release folder the way a user would, and plugs emulated devices into the machine's USB controller: three sticks, two keyboards, a mouse, a phone, a network adapter, a sound card, a smart card reader, a serial adapter and a hub. After each step it asks the kernel in the machine what happened. It checks, among other things, that:
 
 - a blocked stick loses its disk, and a new stick under strict mode never gets a driver
 - a new device the policy allows is switched on
@@ -194,6 +200,7 @@ lotus --sysfs ./fake-sys --state ./state --socket ./lotus.sock status
 - the policy survives a killed daemon and a restart of the computer
 - a damaged store locks LOTUS down and the installer resets it
 - removal leaves no file and no device switched off
+- a machine that itself starts from a USB disk keeps that disk: it is not switched off under any rule, it stays writable in read-only mode, and the machine starts again with read-only mode on
 
 CI runs both on every change.
 

@@ -14,8 +14,8 @@ namespace Lotus.Linux
         /// <summary>Where a running system keeps the files it cannot do without, and where live systems mount their medium.</summary>
         private static readonly string[] Vital =
         {
-            "/", "/boot", "/boot/efi", "/usr", "/var", "/cdrom", "/run/live/medium", "/run/initramfs/live",
-            "/lib/live/mount/medium", "/run/archiso/bootmnt"
+            "/", "/boot", "/boot/efi", "/efi", "/usr", "/var", "/etc", "/home", "/root", "/opt", "/srv", "/nix",
+            "/cdrom", "/run/live/medium", "/run/initramfs/live", "/lib/live/mount/medium", "/run/archiso/bootmnt"
         };
 
         /// <summary>

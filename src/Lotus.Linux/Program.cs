@@ -113,6 +113,13 @@ namespace Lotus.Linux
                     Ui.Error("The developer mode needs places of its own: --sysfs, --state and --socket.");
                     return 2;
                 }
+                // Its socket is open to every user, so it must never sit on top of the real devices.
+                string tree = Path.GetFullPath(sysfsRoot).Replace('\\', '/');
+                if (tree == "/sys" || tree.StartsWith("/sys/", StringComparison.Ordinal))
+                {
+                    Ui.Error("The developer mode works on a made-up device tree, not on /sys.");
+                    return 2;
+                }
                 options.Platform = new LinuxPlatform(sysfsRoot, Path.Combine(stateDir, "99-lotus-readonly.rules"));
                 options.AdministratorsOnly = false;
                 options.TakeResetRequest = () => false;
@@ -192,7 +199,7 @@ namespace Lotus.Linux
                 Strict = Json.GetString(reply.Data, "strictState", "")
             };
             if (state.Lockdown) state.Policy = GuardWorker.LockdownPolicy();
-            var backend = new LinuxDeviceBackend(sysfsRoot, () => new HashSet<string>())
+            var backend = new LinuxDeviceBackend(sysfsRoot)
             {
                 IsBlockedByLotus = state.Ledger.Contains
             };

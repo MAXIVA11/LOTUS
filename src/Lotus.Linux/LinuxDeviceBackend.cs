@@ -106,6 +106,32 @@ namespace Lotus.Linux
             return devices;
         }
 
+        /// <summary>
+        /// The USB disks the system runs from, in the terms a udev rule can match
+        /// them by. Hubs on the way to such a disk are left out: naming a hub
+        /// would cover every disk behind it. Throws when the system's disks
+        /// cannot be worked out.
+        /// </summary>
+        public List<UsbIdentity> SystemDisks()
+        {
+            var disks = new List<UsbIdentity>();
+            foreach (string name in findSystemDevices())
+            {
+                string dir = Path.Combine(root, name);
+                if ((ReadLine(Path.Combine(dir, "bDeviceClass")) ?? "").Trim() == "09") continue;
+                string vid = ReadHex4(Path.Combine(dir, "idVendor"));
+                string pid = ReadHex4(Path.Combine(dir, "idProduct"));
+                if (vid == null || pid == null) continue;
+                disks.Add(new UsbIdentity
+                {
+                    Vid = vid.ToLowerInvariant(),
+                    Pid = pid.ToLowerInvariant(),
+                    RawSerial = (ReadLine(Path.Combine(dir, "serial")) ?? "").Trim()
+                });
+            }
+            return disks;
+        }
+
         public UsbDevice ScanOne(string instanceId)
         {
             foreach (UsbDevice device in Scan())
