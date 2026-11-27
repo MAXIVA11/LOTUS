@@ -331,7 +331,7 @@ unplug h1
 
 section "Read-only storage"
 check "the rule is set" "sudo lotus usb allow && sudo lotus storage readonly && sudo lotus status | grep -q READ-ONLY"
-check "the udev rule is in place" "test -f /etc/udev/rules.d/99-lotus-readonly.rules"
+check "the udev rule is in place, readable like any other rule" "[ \"\$(stat -c '%a %U' /etc/udev/rules.d/99-lotus-readonly.rules)\" = '644 root' ]"
 check "udev finds nothing wrong with the rule" "! udevadm verify --help >/dev/null 2>&1 || udevadm verify /etc/udev/rules.d/99-lotus-readonly.rules"
 check "both sticks are on" "t wait-auth $STICK1 1 && t wait-auth $STICK2 1"
 check "the kernel marks the first disk read-only" "t wait-ro $STICK1 1"
@@ -428,12 +428,13 @@ check "nothing of LOTUS is left" "! test -e /usr/local/bin/lotus && ! test -e /u
 check "systemd no longer knows the service" "! systemctl cat lotus >/dev/null 2>&1 && ! pidof lotus"
 
 section "Removing when the daemon cannot help"
-g "cd release && sudo ./install.sh >/dev/null 2>&1; sudo lotus storage block --yes >/dev/null; sudo lotus arm --yes >/dev/null"
-check "installed again and armed, the sticks are off" "t wait-auth $STICK1 0 && t wait-auth $STICK2 0 && [ \"\$(t defaults)\" = '0 ' ]"
+g "cd release && sudo ./install.sh >/dev/null 2>&1; sudo lotus storage readonly >/dev/null; sudo lotus usb trusted --yes >/dev/null; sudo lotus arm --yes >/dev/null"
+check "installed again and armed: the adapter is off and the sticks are read-only" "t wait-auth $SERIAL 0 && t wait-ro $STICK1 1 && t wait-ro $STICK2 1 && [ \"\$(t defaults)\" = '0 ' ]"
 g "sudo systemctl stop lotus; sudo cp /usr/local/sbin/lotus-uninstall /root/u.sh; sudo rm /usr/local/bin/lotus"
 broken_output=$(g "sudo sh /root/u.sh" 2>&1)
 printf '%s\n' "$broken_output" | sed 's/^/    /'
-check "the uninstaller switches every device on by itself" "t wait-auth $STICK1 1 && t wait-auth $STICK2 1 && t all-on"
+check "the uninstaller switches every device on by itself" "t wait-auth $SERIAL 1 && t all-on"
+check "and makes the disks writable again" "t wait-ro $STICK1 0 5 && t wait-ro $STICK2 0 5 && b=\$(t block $STICK1) && sudo mount /dev/\$b /mnt && sudo touch /mnt/written-after-removal && sudo umount /mnt"
 check "and opens the controllers" "[ \"\$(t defaults)\" = '1 ' ]"
 check "nothing of LOTUS is left" "! test -e /usr/local/bin/lotus && ! test -e /etc/systemd/system/lotus.service && ! sudo test -e /var/lib/lotus"
 check "the sticks have their disks back" "t wait-block $STICK1 && t wait-block $STICK2"
@@ -495,7 +496,7 @@ if wait_for_ssh 300; then
     g "sudo systemctl reboot" 2>/dev/null
     sleep 8
     if wait_for_ssh 240; then ok "with read-only mode on, the machine starts again from its USB disk"; else bad "with read-only mode on, the machine starts again from its USB disk" "$(tail -n 20 "$work/console.log")"; fi
-    check "the system's disk is writable after the restart" "[ \"\$(cat /sys/block/\$(t block $ROOT)/ro)\" = 0 ] && sudo touch /var/tmp/written-after-restart && ! findmnt -n -o OPTIONS / | grep -qw ro"
+    check "the system's disk is writable after the restart" "[ \"\$(cat /sys/block/\$(t block $ROOT)/ro)\" = 0 ] && sudo touch /var/tmp/written-after-restart && findmnt -n -o OPTIONS / | tr ',' '\n' | grep -qx rw"
     check "the stick is read-only after the restart" "t wait-ro $STICK1 1 20"
     check "LOTUS is armed" "sudo lotus status | grep -q ARMED"
 

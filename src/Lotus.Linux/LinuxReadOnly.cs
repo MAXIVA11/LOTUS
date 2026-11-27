@@ -145,6 +145,13 @@ namespace Lotus.Linux
             string directory = Path.GetDirectoryName(rulePath);
             if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
             File.WriteAllText(rulePath, BuildRule(keep));
+            if (!OperatingSystem.IsWindows())
+            {
+                // The daemon creates its own files closed to everyone. A udev rule is
+                // not a secret, and the tools that check rules expect to be able to read it.
+                File.SetUnixFileMode(rulePath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            }
             reload();
         }
 
