@@ -169,7 +169,7 @@ namespace Lotus.Core
                 case Reason.Disarmed:
                     return "LOTUS is disarmed, so nothing is blocked.";
                 case Reason.SystemDisk:
-                    return "Windows runs from this device. LOTUS never blocks it.";
+                    return SystemWords.SystemDisk;
                 case Reason.Trusted:
                     return decision.Trust != null && decision.Trust.Kind == TrustKind.Model
                         ? "Trusted. Every device of this model is allowed."

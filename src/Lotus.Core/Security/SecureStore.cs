@@ -74,12 +74,21 @@ namespace Lotus.Core
         /// <summary>Where LOTUS 1.1 kept the list of blocked devices, readable by administrators.</summary>
         public string OldLedgerPath => Path.Combine(directory, "ledger.json");
 
+#if NETFRAMEWORK
         /// <summary>
-        /// The permissions the key file is created with. Left empty in tests. The
-        /// service sets it so that the key is never readable by anyone else, not
-        /// even for the instant it takes to write it.
+        /// The permissions the key file is created with on Windows. Left empty in
+        /// tests. The service sets it so that the key is never readable by anyone
+        /// else, not even for the instant it takes to write it.
         /// </summary>
         public Func<System.Security.AccessControl.FileSecurity> KeyFileSecurity;
+#endif
+
+        /// <summary>
+        /// Called with the path of a key file that was just written and is about
+        /// to be put in place. Systems without Windows permissions use it to make
+        /// the file readable by its owner only.
+        /// </summary>
+        public Action<string> ProtectKeyFile;
 
         /// <summary>
         /// Wraps and unwraps the key for the disk. On Windows this is the data
@@ -462,6 +471,8 @@ namespace Lotus.Core
             byte[] wrapped = KeyWrap.Wrap(key);
             string temp = KeyPath + ".tmp";
             if (File.Exists(temp)) File.Delete(temp);
+            bool written = false;
+#if NETFRAMEWORK
             if (KeyFileSecurity != null)
             {
                 using (var stream = new FileStream(temp, FileMode.CreateNew,
@@ -471,9 +482,17 @@ namespace Lotus.Core
                     stream.Write(wrapped, 0, wrapped.Length);
                     stream.Flush(true);
                 }
+                written = true;
             }
-            else
+#endif
+            if (!written)
             {
+                if (ProtectKeyFile != null)
+                {
+                    // Empty first, protected next, filled last: the key never sits in a file others could open.
+                    WriteFile(temp, new byte[0]);
+                    ProtectKeyFile(temp);
+                }
                 WriteFile(temp, wrapped);
             }
             if (File.Exists(KeyPath)) File.Delete(KeyPath);
@@ -510,32 +529,5 @@ namespace Lotus.Core
         byte[] Wrap(byte[] key);
         /// <summary>Throws CryptographicException or FormatException when the bytes are not a wrapped key.</summary>
         byte[] Unwrap(byte[] wrapped);
-    }
-
-    public static class PlatformKeyWrap
-    {
-        public static IKeyWrap Create()
-        {
-            return new MachineKeyWrap();
-        }
-    }
-
-    /// <summary>
-    /// Windows: the key is wrapped by the data protection service with the
-    /// machine's own secret, so the key file cannot be used on another PC.
-    /// </summary>
-    public sealed class MachineKeyWrap : IKeyWrap
-    {
-        private static readonly byte[] Entropy = Encoding.ASCII.GetBytes("LOTUS seal key v1");
-
-        public byte[] Wrap(byte[] key)
-        {
-            return ProtectedData.Protect(key, Entropy, DataProtectionScope.LocalMachine);
-        }
-
-        public byte[] Unwrap(byte[] wrapped)
-        {
-            return ProtectedData.Unprotect(wrapped, Entropy, DataProtectionScope.LocalMachine);
-        }
     }
 }

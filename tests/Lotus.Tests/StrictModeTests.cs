@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Lotus.Core;
+#if NETFRAMEWORK
 using Microsoft.Win32;
+#endif
 using Xunit;
 
 namespace Lotus.Tests
@@ -44,6 +46,7 @@ namespace Lotus.Tests
         }
     }
 
+#if NETFRAMEWORK
     /// <summary>The real registry code, pointed at a key of its own under the current user.</summary>
     public class RegistryInstallGateTests : IDisposable
     {
@@ -229,6 +232,7 @@ namespace Lotus.Tests
             }
         }
     }
+#endif
 
     /// <summary>The enforcer against a pretend Windows that refuses new devices the way the real one does.</summary>
     public class StrictModeTests
@@ -282,7 +286,7 @@ namespace Lotus.Tests
 
             Assert.True(gate.Owned);
             Assert.Equal(513, gate.Plan.Deny.Count);
-            Assert.Contains(events, e => e.Type == EventTypes.PolicyChanged && e.Message.Contains("refuses to install"));
+            Assert.Contains(events, e => e.Type == EventTypes.PolicyChanged && e.Message == SystemWords.GateClosed);
         }
 
         [Fact]
@@ -503,7 +507,7 @@ namespace Lotus.Tests
             Assert.True(On(Devices.StickId).Started);
             Assert.True(On(Devices.PhoneId).Started);
             Assert.Equal(0, ledger.Count);
-            Assert.Contains(events, e => e.Type == EventTypes.PolicyChanged && e.Message.Contains("installs new USB devices again"));
+            Assert.Contains(events, e => e.Type == EventTypes.PolicyChanged && e.Message == SystemWords.GateOpened);
         }
 
         [Fact]
@@ -547,7 +551,7 @@ namespace Lotus.Tests
 
             Assert.False(gate.Owned);
             Assert.Equal(0, gate.ApplyCalls);
-            Assert.Single(events, e => e.Type == EventTypes.Warning && e.Message.Contains("did not set"));
+            Assert.Single(events, e => e.Type == EventTypes.Warning && e.Message == SystemWords.GateForeign);
 
             bus.Plug(Devices.Stick());
             enforcer.FastPass(StorageBlocked(), Devices.StickId);
@@ -562,7 +566,7 @@ namespace Lotus.Tests
             enforcer.RunOnce(StorageBlocked());
 
             Assert.False(gate.Owned);
-            Assert.Single(events, e => e.Type == EventTypes.Warning && e.Message.Contains("cannot refuse"));
+            Assert.Single(events, e => e.Type == EventTypes.Warning && e.Message == SystemWords.GateUnsupported);
 
             bus.Plug(Devices.Stick());
             enforcer.FastPass(StorageBlocked(), Devices.StickId);
@@ -583,7 +587,7 @@ namespace Lotus.Tests
             }
 
             Assert.Equal(3, bus.ReinstallCalls);
-            Assert.Single(events, e => e.Type == EventTypes.Warning && e.Message.Contains("did not install"));
+            Assert.Single(events, e => e.Type == EventTypes.Warning && e.Message == SystemWords.NotLetIn("Wireless Receiver"));
 
             // Unplugging and plugging in again starts over.
             bus.Unplug(Devices.MouseId);

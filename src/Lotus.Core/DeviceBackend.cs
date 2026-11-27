@@ -3,36 +3,8 @@ using System.Collections.Generic;
 
 namespace Lotus.Core
 {
-    /// <summary>
-    /// What the enforcer needs from the operating system. The real implementation
-    /// talks to Windows. Tests and demo mode plug in a simulated one.
-    /// </summary>
-    public interface IDeviceBackend
-    {
-        /// <summary>Every USB device that is connected right now, including ones that are switched off.</summary>
-        List<UsbDevice> Scan();
-        /// <summary>Switches a connected device off and reports which method worked.</summary>
-        DeviceOpResult Block(string instanceId, out BlockMethod method);
-        /// <summary>Switches a device back on, or clears its disabled mark when it is not connected.</summary>
-        DeviceOpResult Unblock(string instanceId);
-        /// <summary>One connected device, or null when the ID is not a connected USB device.</summary>
-        UsbDevice ScanOne(string instanceId);
-        /// <summary>Devices Windows remembers that are not connected right now.</summary>
-        List<UsbDevice> ScanAbsent();
-        /// <summary>
-        /// Marks a device that is not connected as disabled, so that it is already
-        /// off when it is plugged in.
-        /// </summary>
-        DeviceOpResult BlockAbsent(string instanceId);
-        /// <summary>The functions of a connected device that Windows lists as device nodes of their own.</summary>
-        List<UsbChild> Children(string instanceId);
-        /// <summary>The device a function node belongs to, or null.</summary>
-        string ParentOf(string instanceId);
-        /// <summary>Makes Windows forget a connected device and find it again, so that it is installed afresh.</summary>
-        DeviceOpResult Reinstall(string instanceId);
-    }
-
-    public sealed class WindowsDeviceBackend : IDeviceBackend
+    /// <summary>USB devices as Windows shows them, and the Windows calls that switch them off and on.</summary>
+    public sealed class WindowsDeviceBackend : IDeviceBackend, IReportsSystemDisk
     {
         /// <summary>
         /// Set when the last scan could not work out which disk Windows runs from.

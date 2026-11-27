@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+#if NETFRAMEWORK
 using System.Security.AccessControl;
 using System.Security.Principal;
+#endif
 using System.Text;
 using System.Threading;
 using Lotus.Core;
@@ -685,6 +687,7 @@ namespace Lotus.Tests
         }
     }
 
+#if NETFRAMEWORK
     public class FolderGuardTests
     {
         /// <summary>
@@ -748,6 +751,7 @@ namespace Lotus.Tests
                                           rule.FileSystemRights == FileSystemRights.FullControl);
         }
     }
+#endif
 
     public class SecureStoreTests : IDisposable
     {
@@ -797,7 +801,7 @@ namespace Lotus.Tests
         /// <summary>Writes a store the way LOTUS 1.1 did: readable JSON with a keyed checksum in front.</summary>
         private static void WriteOldStore(SecureStore store, Policy policy, bool breakSeal = false)
         {
-            byte[] key = new MachineKeyWrap().Unwrap(File.ReadAllBytes(store.KeyPath));
+            byte[] key = PlatformKeyWrap.Create().Unwrap(File.ReadAllBytes(store.KeyPath));
             string payload = Lotus.Core.Json.Write(new Dictionary<string, object>
             {
                 ["serial"] = 5.0,
@@ -1109,11 +1113,20 @@ namespace Lotus.Tests
         }
     }
 
-    /// <summary>Runs the real service loop against a pretend USB bus and talks to it over a real pipe.</summary>
+    /// <summary>
+    /// Runs the real service loop against a pretend USB bus and talks to it over
+    /// the real channel: a named pipe on Windows, a Unix socket on Linux.
+    /// </summary>
     public class GuardWorkerTests : IDisposable
     {
         private readonly string folder = Path.Combine(Path.GetTempPath(), "lotus-guard-" + Guid.NewGuid().ToString("N"));
+#if NETFRAMEWORK
         private readonly string pipeName = "LotusGuard.Test." + Guid.NewGuid().ToString("N");
+#else
+        // The name of a socket is a path, and a path to a socket may only be about a hundred characters long.
+        private readonly string pipeName =
+            Path.Combine(Path.GetTempPath(), "lotus-" + Guid.NewGuid().ToString("N").Substring(0, 12) + ".sock");
+#endif
         private readonly SimulatedBackend bus = new SimulatedBackend();
         private readonly SimulatedReadOnlyPolicy readOnly = new SimulatedReadOnlyPolicy();
         private readonly SimulatedInstallGate installGate = new SimulatedInstallGate();
@@ -1138,6 +1151,9 @@ namespace Lotus.Tests
             worker?.Dispose();
             worker = new GuardWorker(new GuardOptions
             {
+#if !NETFRAMEWORK
+                Platform = new Lotus.Linux.LinuxPlatform(Path.Combine(folder, "no-devices")),
+#endif
                 Backend = bus,
                 ReadOnly = readOnly,
                 InstallGate = installGate,
@@ -1478,6 +1494,7 @@ namespace Lotus.Tests
             Assert.True(client.Status().Ok); // and the service is still there
         }
 
+#if NETFRAMEWORK
         [Fact]
         public void A_second_program_cannot_take_over_the_pipe_name()
         {
@@ -1493,6 +1510,7 @@ namespace Lotus.Tests
                 }
             }
         }
+#endif
 
         [Fact]
         public void The_status_file_says_whether_LOTUS_is_armed_and_nothing_about_the_policy()
