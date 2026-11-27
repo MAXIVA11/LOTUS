@@ -1095,9 +1095,10 @@ namespace Lotus.Linux.Tests
             if (OperatingSystem.IsWindows()) return;
             UnixFileMode owner = UnixFileMode.UserRead | UnixFileMode.UserWrite;
             Assert.Equal(owner | UnixFileMode.UserExecute, File.GetUnixFileMode(LotusPaths.SecureDir));
-            foreach (string file in Directory.GetFiles(LotusPaths.SecureDir))
+            Assert.Equal(owner | UnixFileMode.UserExecute, File.GetUnixFileMode(LotusPaths.DataDir));
+            foreach (string file in Directory.GetFiles(LotusPaths.DataDir, "*", SearchOption.AllDirectories))
             {
-                Assert.Equal((UnixFileMode)0, File.GetUnixFileMode(file) & ~owner);
+                Assert.True((File.GetUnixFileMode(file) & ~owner) == 0, file + " is open to others");
             }
         }
 
