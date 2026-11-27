@@ -13,6 +13,8 @@ RestartSec=1
 
 # /var/lib/lotus holds the encrypted policy, /run/lotus the control socket.
 StateDirectory=lotus
+StateDirectoryMode=0700
+UMask=0077
 RuntimeDirectory=lotus
 RuntimeDirectoryMode=0700
 CacheDirectory=lotus

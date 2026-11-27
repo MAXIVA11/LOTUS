@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using Lotus.Core;
@@ -98,26 +99,40 @@ namespace Lotus.Linux
             return watcher;
         }
 
+        [DllImport("libc")]
+        private static extern uint umask(uint mask);
+
         /// <summary>
-        /// The state folder may be listed by everyone, because the notifications
-        /// and the log are for everyone. The folder with the store is root's alone.
+        /// Everything LOTUS keeps is root's alone: the folders, the store, the
+        /// log. Nothing on Linux reads them but the daemon and the "lotus"
+        /// command, and both run as root.
         /// </summary>
         public override void PrepareFolders(Action<string> onError)
         {
             try
             {
+                if (!OperatingSystem.IsWindows())
+                {
+                    // Every file the daemon creates from here on is created closed to everyone else.
+                    try
+                    {
+                        umask(0x3F); // 077
+                    }
+                    catch (Exception ex) when (ex is DllNotFoundException || ex is EntryPointNotFoundException)
+                    {
+                    }
+                }
                 Directory.CreateDirectory(LotusPaths.DataDir);
                 Directory.CreateDirectory(LotusPaths.SecureDir);
                 if (OperatingSystem.IsWindows()) return;
-                File.SetUnixFileMode(LotusPaths.DataDir,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
-                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
-                File.SetUnixFileMode(LotusPaths.SecureDir,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-                foreach (string file in Directory.GetFiles(LotusPaths.SecureDir))
+                const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                foreach (string folder in new[] { LotusPaths.DataDir, LotusPaths.SecureDir })
                 {
-                    File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                    File.SetUnixFileMode(folder, ownerOnly | UnixFileMode.UserExecute);
+                    foreach (string file in Directory.GetFiles(folder))
+                    {
+                        File.SetUnixFileMode(file, ownerOnly);
+                    }
                 }
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
