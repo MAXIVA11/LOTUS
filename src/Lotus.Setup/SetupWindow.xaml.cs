@@ -80,10 +80,21 @@ namespace Lotus.Setup
                 WelcomeNote.Text = "This copy of LOTUS-Setup was built without the program files. Build it with build.ps1.";
                 PrimaryButton.IsEnabled = false;
             }
-            if (update && Installer.IsLockedDown())
+            if (update && Installer.HasPayload)
             {
-                WelcomeNote.Text = "LOTUS is locked down because its policy store was damaged. This update resets it: " +
-                                   "LOTUS starts disarmed again and you set a new policy.";
+                // Asked in the background. The service answers between two passes
+                // over the devices, and a pass that switches several devices off
+                // takes seconds. The window must not stand still for that.
+                System.Threading.Tasks.Task.Run(() => Installer.IsLockedDown()).ContinueWith(answer =>
+                {
+                    if (answer.Status != System.Threading.Tasks.TaskStatus.RanToCompletion || !answer.Result) return;
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        if (stage != Stage.Welcome) return;
+                        WelcomeNote.Text = "LOTUS is locked down because its policy store was damaged. This update resets it: " +
+                                           "LOTUS starts disarmed again and you set a new policy.";
+                    }));
+                });
             }
         }
 

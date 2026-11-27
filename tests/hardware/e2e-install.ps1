@@ -70,6 +70,8 @@ $gateKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions
 $eventLogKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\LotusGuard'
 $defaultServiceRights = 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)'
 $oldPassword = 'e2e test password 1'
+# The version the installer under test carries, as a pattern: 1.3.*
+$newVersion = (((Get-Item $Setup).VersionInfo.FileVersion -split '\.')[0..1] -join '.') + '.*'
 $script:failed = 0
 $script:passed = 0
 
@@ -370,7 +372,7 @@ try {
             Check 'update exits with 0' ($code -eq 0) "exit=$code"
             Say-SetupLog
             Check 'service runs after the update' (Wait-Until { (Get-ServiceInfo).State -eq 'Running' -and (Get-Status).Ok } 20) "state=$((Get-ServiceInfo).State)"
-            Check 'the new version is installed' ((Get-Item $guard).VersionInfo.FileVersion -like '1.2.*') "version=$((Get-Item $guard).VersionInfo.FileVersion)"
+            Check 'the new version is installed' ((Get-Item $guard).VersionInfo.FileVersion -like $newVersion) "version=$((Get-Item $guard).VersionInfo.FileVersion)"
             $now = Get-Policy
             Check 'update keeps the trusted list' ($null -ne $now -and $now.Trusted.Count -eq $old.Trusted.Count) "before=$($old.Trusted.Count) after=$($now.Trusted.Count)"
             Check 'update keeps the armed setting' ($null -ne $now -and $now.Armed -eq $old.Armed)
@@ -448,7 +450,7 @@ try {
         Check 'update over a password-protected 1.1 exits with 0' ($code -eq 0) "exit=$code"
         Say-SetupLog
         Check 'service runs after the update over 1.1' (Wait-Until { (Get-ServiceInfo).State -eq 'Running' -and (Get-Status).Ok } 25) "state=$((Get-ServiceInfo).State)"
-        Check 'the new version is installed over 1.1' ((Get-Item $guard).VersionInfo.FileVersion -like '1.2.*')
+        Check 'the new version is installed over 1.1' ((Get-Item $guard).VersionInfo.FileVersion -like $newVersion)
         Check 'the service starts automatically again' ((Get-ServiceInfo).StartMode -eq 'Auto') "mode=$((Get-ServiceInfo).StartMode)"
         $now = Get-Policy
         Check 'the 1.1 policy was taken over: armed, same trusted list' ($null -ne $now -and $now.Armed -and $now.Trusted.Count -eq $policy11.Trusted.Count) "trusted=$($now.Trusted.Count)"
@@ -526,7 +528,7 @@ try {
     $run = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue).LOTUS
     Check 'notifier starts at sign-in' ($run -eq "`"$(Join-Path $installDir 'LOTUS.exe')`" --tray") "value=$run"
     $un = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\LOTUS' -ErrorAction SilentlyContinue
-    Check 'listed in installed apps as 1.2' ($un.DisplayName -eq 'LOTUS' -and $un.DisplayVersion -like '1.2.*' -and $un.UninstallString -like '*Uninstall.exe" /uninstall')
+    Check 'listed in installed apps with the new version' ($un.DisplayName -eq 'LOTUS' -and $un.DisplayVersion -like $newVersion -and $un.UninstallString -like '*Uninstall.exe" /uninstall')
     Check 'no setup log in TEMP' (-not (Test-Path (Join-Path $env:TEMP 'LOTUS-Setup.log')))
     Check 'no event log registration' (-not (Test-Path $eventLogKey))
     Check 'guard logged its start' (Wait-Until { (Count-Events 'guard_started') -ge 1 } 10)
@@ -983,11 +985,26 @@ try {
     $kept = New-Policy $true 'Allow' 'Block' $true @()
     $reply = Send-Policy $kept
     Check 'a policy is set for the window test' $reply.Ok "code=$($reply.Code) $($reply.Message)"
+    # The service is switching devices off right now and answers slowly. The
+    # window must come up all the same. How slowly is timed on the side.
+    $timer = [powershell]::Create()
+    $null = $timer.AddScript({
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        try { $null = (New-Object Lotus.Core.GuardClient ([Lotus.Core.GuardProtocol]::PipeName), $true).Status() } catch { }
+        $clock.ElapsedMilliseconds
+    })
+    $pending = $timer.BeginInvoke()
     $p = Start-Process -FilePath $Setup -PassThru
     $w = Get-SetupWindow $p
     Check 'setup window opens again' ($null -ne $w)
-    if ($null -ne $w) {
-        Check 'second run offers UPDATE' (Wait-Button $w 'PrimaryButton' 'UPDATE' 10) "button=$(Get-PartText $w 'PrimaryButton')"
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $offered = $null -ne $w -and (Wait-Button $w 'PrimaryButton' 'UPDATE' 60)
+    Say "   the UPDATE button was there after $($watch.ElapsedMilliseconds) ms"
+    Check 'second run offers UPDATE' $offered "button=$(if ($null -ne $w) { Get-PartText $w 'PrimaryButton' })"
+    Check 'the window does not wait for the service' ($offered -and $watch.ElapsedMilliseconds -lt 5000) "ms=$($watch.ElapsedMilliseconds)"
+    try { Say "   the service took $($timer.EndInvoke($pending)) ms to answer a question asked at the same moment" } catch { Say "   the service could not be timed: $($_.Exception.Message)" }
+    $timer.Dispose()
+    if ($offered) {
         Push-Button $w 'PrimaryButton'
         Check 'update finishes' (Wait-Button $w 'PrimaryButton' 'OPEN LOTUS' 90) "summary=$(Get-PartText $w 'WorkSummary')"
         $null = Wait-Until { $null -ne (Get-Policy) } 20
