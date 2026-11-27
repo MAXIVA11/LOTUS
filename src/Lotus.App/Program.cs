@@ -249,21 +249,8 @@ namespace Lotus.App
             plan.TrustCandidates.RemoveAll(d => d.Name.Contains("HyperX"));
             window.HideOverlay();
 
-            // Arming for the first time asks for a password.
-            window.ShowOverlayForScreenshot(new ConfirmRequest
-            {
-                Title = "SET A PASSWORD",
-                Intro = "Choose a LOTUS password before arming. Every later change to the policy asks for it, " +
-                        "and so does removing LOTUS. LOTUS cannot recover it if it is lost.",
-                ConfirmText = "SET AND ARM",
-                Ask = PasswordAsk.Create
-            });
-            window.FillPasswordsForScreenshot();
-            Shot("03b-password");
-            window.HideOverlay();
-
             Policy armed = vm.Finish(plan, true);
-            backend.SavePolicy(armed, "", "demo password");
+            backend.SavePolicy(armed);
             vm.Accepted(armed, true);
 
             backend.ToggleStick();

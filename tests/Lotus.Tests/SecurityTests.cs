@@ -14,73 +14,257 @@ using Xunit;
 
 namespace Lotus.Tests
 {
-    public class PasswordTests
+    public class ObjectCodecTests
     {
-        private static string Hex(byte[] bytes)
+        private static Dictionary<string, object> Sample()
         {
-            return string.Concat(bytes.Select(b => b.ToString("x2")));
+            return new Dictionary<string, object>
+            {
+                ["armed"] = true,
+                ["off"] = false,
+                ["nothing"] = null,
+                ["count"] = 3.0,
+                ["name"] = "Ünïcode 日本 🔒",
+                ["list"] = new List<object>
+                {
+                    "a", 1.5, false, null,
+                    new Dictionary<string, object> { ["deep"] = new List<object> { "x" } }
+                },
+                ["empty"] = new Dictionary<string, object>()
+            };
+        }
+
+        [Fact]
+        public void A_record_comes_back_as_it_went_in()
+        {
+            Dictionary<string, object> before = Sample();
+            object after = ObjectCodec.Decode(ObjectCodec.Encode(before));
+            Assert.Equal(Json.Write(before), Json.Write(after));
+        }
+
+        [Fact]
+        public void A_policy_survives_the_binary_form()
+        {
+            var policy = new Policy { Armed = true, Storage = StorageMode.ReadOnly, Pnp = PnpMode.Block, AllowInput = false };
+            policy.AddTrust(TrustEntry.ForDevice(Devices.Headset()));
+            policy.AddTrust(TrustEntry.ForModel(Devices.Stick()));
+
+            object tree = ObjectCodec.Decode(ObjectCodec.Encode(Json.Parse(policy.ToJson())));
+            Policy back = Policy.FromJson(Json.Write(tree, false));
+
+            Assert.True(back.SettingsEqual(policy));
+            Assert.Equal(2, back.Trusted.Count);
+            Assert.Equal(policy.Trusted[0].Functions, back.Trusted[0].Functions);
+        }
+
+        [Fact]
+        public void Whole_numbers_of_any_type_are_stored_as_numbers()
+        {
+            var record = new Dictionary<string, object> { ["a"] = 7, ["b"] = 7L, ["c"] = (byte)7 };
+            var back = (Dictionary<string, object>)ObjectCodec.Decode(ObjectCodec.Encode(record));
+            Assert.All(back.Values, value => Assert.Equal(7.0, value));
+        }
+
+        [Fact]
+        public void The_binary_form_is_not_json()
+        {
+            byte[] bytes = ObjectCodec.Encode(Sample());
+            string text = Encoding.UTF8.GetString(bytes);
+            Assert.False(Json.TryParse(text, out object _));
+            Assert.DoesNotContain("{", text);
+            Assert.DoesNotContain("\":", text);
+        }
+
+        [Fact]
+        public void A_record_that_was_cut_short_is_refused_at_every_length()
+        {
+            byte[] bytes = ObjectCodec.Encode(Sample());
+            for (int length = 0; length < bytes.Length; length++)
+            {
+                var cut = new byte[length];
+                Buffer.BlockCopy(bytes, 0, cut, 0, length);
+                Assert.Throws<FormatException>(() => ObjectCodec.Decode(cut));
+            }
+        }
+
+        [Fact]
+        public void Data_after_the_record_is_refused()
+        {
+            byte[] bytes = ObjectCodec.Encode(Sample());
+            Array.Resize(ref bytes, bytes.Length + 1);
+            Assert.Throws<FormatException>(() => ObjectCodec.Decode(bytes));
         }
 
         [Theory]
-        [InlineData(1, "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")]
-        [InlineData(2, "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43")]
-        [InlineData(4096, "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a")]
-        public void Pbkdf2_matches_the_published_test_vectors(int iterations, string expected)
+        [InlineData(new byte[] { 9 })] // a kind of value that does not exist
+        [InlineData(new byte[] { 5, 0xFF, 0xFF, 0xFF, 0x7F })] // a list that claims two billion items
+        [InlineData(new byte[] { 5, 0xFF, 0xFF, 0xFF, 0xFF })] // a negative count
+        [InlineData(new byte[] { 4, 2, 0, 0, 0, 0xC3, 0x28 })] // text that is not valid UTF-8
+        [InlineData(new byte[] { 3, 0, 0, 0, 0, 0, 0, 0xF8, 0x7F })] // not a number
+        [InlineData(new byte[] { 6, 2, 0, 0, 0, 1, 0, 0, 0, 0x61, 0, 1, 0, 0, 0, 0x61, 0 })] // the same field twice
+        public void Hostile_bytes_are_refused(byte[] bytes)
         {
-            byte[] key = Pbkdf2.Sha256(Encoding.ASCII.GetBytes("password"), Encoding.ASCII.GetBytes("salt"),
-                iterations, 32);
-            Assert.Equal(expected, Hex(key));
+            Assert.Throws<FormatException>(() => ObjectCodec.Decode(bytes));
         }
 
         [Fact]
-        public void Pbkdf2_fills_more_than_one_block()
+        public void Nesting_without_end_is_refused()
         {
-            byte[] key = Pbkdf2.Sha256(Encoding.ASCII.GetBytes("passwordPASSWORDpassword"),
-                Encoding.ASCII.GetBytes("saltSALTsaltSALTsaltSALTsaltSALTsalt"), 4096, 40);
-            Assert.Equal("348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1c635518c7dac47e9", Hex(key));
+            var bytes = new byte[200 * 5];
+            for (int i = 0; i < 200; i++)
+            {
+                bytes[i * 5] = 5; // a list
+                bytes[i * 5 + 1] = 1; // with one item
+            }
+            Assert.Throws<FormatException>(() => ObjectCodec.Decode(bytes));
         }
 
         [Fact]
-        public void A_record_accepts_its_own_password_and_nothing_else()
+        public void Random_bytes_never_do_worse_than_being_refused()
         {
-            PasswordRecord record = PasswordRecord.Create("correct horse", 500);
-            Assert.True(record.Verify("correct horse"));
-            Assert.False(record.Verify("correct horsf"));
-            Assert.False(record.Verify(""));
-            Assert.False(record.Verify(null));
+            var random = new Random(20261127);
+            for (int round = 0; round < 3000; round++)
+            {
+                var bytes = new byte[random.Next(0, 64)];
+                random.NextBytes(bytes);
+                try
+                {
+                    ObjectCodec.Decode(bytes);
+                }
+                catch (FormatException)
+                {
+                }
+            }
+        }
+    }
+
+    public class SealedBoxTests
+    {
+        private static readonly byte[] Key = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+
+        private static bool Contains(byte[] haystack, byte[] needle)
+        {
+            for (int i = 0; i + needle.Length <= haystack.Length; i++)
+            {
+                int j = 0;
+                while (j < needle.Length && haystack[i + j] == needle[j]) j++;
+                if (j == needle.Length) return true;
+            }
+            return false;
         }
 
         [Fact]
-        public void Two_records_for_one_password_differ()
+        public void What_is_sealed_comes_back_with_its_serial_number()
         {
-            PasswordRecord a = PasswordRecord.Create("correct horse", 500);
-            PasswordRecord b = PasswordRecord.Create("correct horse", 500);
-            Assert.NotEqual(Hex(a.Hash), Hex(b.Hash));
+            byte[] plain = Encoding.UTF8.GetBytes("the trusted list");
+            byte[] file = SealedBox.Seal(Key, SealedBox.KindPolicy, 42, plain);
+
+            byte[] back = SealedBox.Open(Key, SealedBox.KindPolicy, file, out long serial);
+            Assert.Equal(plain, back);
+            Assert.Equal(42, serial);
         }
 
         [Fact]
-        public void Short_passwords_are_refused()
+        public void The_file_starts_with_the_LOTUS_mark_and_shows_nothing_of_the_content()
         {
-            Assert.NotNull(PasswordRecord.Problem("1234567"));
-            Assert.Null(PasswordRecord.Problem("12345678"));
-            Assert.Throws<ArgumentException>(() => PasswordRecord.Create("short"));
+            byte[] plain = Encoding.UTF8.GetBytes(@"USB\VID_0781&PID_5567\4C530001230505116353 armed trusted");
+            byte[] file = SealedBox.Seal(Key, SealedBox.KindPolicy, 1, plain);
+
+            Assert.True(SealedBox.LooksSealed(file));
+            Assert.Equal(new byte[] { 0x4C, 0x4F, 0x54, 0x55, 0x53, 0x00, 2, SealedBox.KindPolicy }, file.Take(8).ToArray());
+            foreach (string word in new[] { "USB", "VID_0781", "armed", "trusted", "4C53" })
+            {
+                Assert.False(Contains(file, Encoding.UTF8.GetBytes(word)), word);
+                Assert.False(Contains(file, Encoding.Unicode.GetBytes(word)), word);
+            }
         }
 
         [Fact]
-        public void A_record_survives_json_and_rejects_damage()
+        public void The_same_content_never_gives_the_same_file_twice()
         {
-            PasswordRecord record = PasswordRecord.Create("correct horse", 500);
-            PasswordRecord back = PasswordRecord.FromJsonObject(record.ToJsonObject());
-            Assert.True(back.Verify("correct horse"));
+            byte[] plain = Encoding.UTF8.GetBytes("same");
+            byte[] first = SealedBox.Seal(Key, SealedBox.KindPolicy, 1, plain);
+            byte[] second = SealedBox.Seal(Key, SealedBox.KindPolicy, 1, plain);
+            Assert.NotEqual(first, second);
+            // Not even one encrypted block repeats.
+            Assert.NotEqual(first.Skip(36).Take(16).ToArray(), second.Skip(36).Take(16).ToArray());
+        }
 
-            Dictionary<string, object> broken = record.ToJsonObject();
-            broken["salt"] = "not base64 !!";
-            Assert.Null(PasswordRecord.FromJsonObject(broken));
+        [Fact]
+        public void The_size_of_the_file_says_little_about_the_content()
+        {
+            int small = SealedBox.Seal(Key, SealedBox.KindPolicy, 1, new byte[10]).Length;
+            int larger = SealedBox.Seal(Key, SealedBox.KindPolicy, 1, new byte[700]).Length;
+            int muchLarger = SealedBox.Seal(Key, SealedBox.KindPolicy, 1, new byte[3000]).Length;
+            Assert.Equal(small, larger);
+            Assert.True(muchLarger > small);
+        }
 
-            // A planted record must not be able to make the service hash for hours.
-            Dictionary<string, object> slow = record.ToJsonObject();
-            slow["iterations"] = 2000000000.0;
-            Assert.Null(PasswordRecord.FromJsonObject(slow));
+        [Fact]
+        public void Changing_any_single_byte_breaks_the_seal()
+        {
+            byte[] file = SealedBox.Seal(Key, SealedBox.KindPolicy, 7, Encoding.UTF8.GetBytes("content"));
+            for (int at = 0; at < file.Length; at++)
+            {
+                var changed = (byte[])file.Clone();
+                changed[at] ^= 0x01;
+                Assert.Throws<FormatException>(() => SealedBox.Open(Key, SealedBox.KindPolicy, changed, out long _));
+            }
+        }
+
+        [Fact]
+        public void A_file_that_was_cut_short_or_made_longer_is_refused()
+        {
+            byte[] file = SealedBox.Seal(Key, SealedBox.KindPolicy, 7, Encoding.UTF8.GetBytes("content"));
+            foreach (int length in new[] { 0, 1, 8, 35, 36, 67, 68, file.Length - 16, file.Length - 1, file.Length + 16 })
+            {
+                var other = new byte[length];
+                Buffer.BlockCopy(file, 0, other, 0, Math.Min(length, file.Length));
+                Assert.Throws<FormatException>(() => SealedBox.Open(Key, SealedBox.KindPolicy, other, out long _));
+            }
+        }
+
+        [Fact]
+        public void Another_key_does_not_open_it()
+        {
+            byte[] file = SealedBox.Seal(Key, SealedBox.KindPolicy, 7, Encoding.UTF8.GetBytes("content"));
+            var other = (byte[])Key.Clone();
+            other[31] ^= 0x80;
+            FormatException refused = Assert.Throws<FormatException>(
+                () => SealedBox.Open(other, SealedBox.KindPolicy, file, out long _));
+            Assert.Contains("seal is broken", refused.Message);
+        }
+
+        [Fact]
+        public void A_ledger_cannot_be_passed_off_as_a_policy()
+        {
+            byte[] ledger = SealedBox.Seal(Key, SealedBox.KindLedger, 0, Encoding.UTF8.GetBytes("content"));
+            Assert.Throws<FormatException>(() => SealedBox.Open(Key, SealedBox.KindPolicy, ledger, out long _));
+
+            // Relabelling the file does not help either: each kind has its own keys.
+            ledger[7] = SealedBox.KindPolicy;
+            Assert.Throws<FormatException>(() => SealedBox.Open(Key, SealedBox.KindPolicy, ledger, out long _));
+        }
+
+        [Fact]
+        public void Empty_content_and_large_content_both_work()
+        {
+            Assert.Empty(SealedBox.Open(Key, SealedBox.KindLedger,
+                SealedBox.Seal(Key, SealedBox.KindLedger, 0, new byte[0]), out long _));
+
+            var large = new byte[300000];
+            new Random(1).NextBytes(large);
+            Assert.Equal(large, SealedBox.Open(Key, SealedBox.KindLedger,
+                SealedBox.Seal(Key, SealedBox.KindLedger, 0, large), out long _));
+        }
+
+        [Fact]
+        public void Text_files_and_the_old_store_do_not_look_sealed()
+        {
+            Assert.False(SealedBox.LooksSealed(Encoding.ASCII.GetBytes("LOTUS-STORE-1\nAAAA\n{}" + new string(' ', 100))));
+            Assert.False(SealedBox.LooksSealed(Encoding.ASCII.GetBytes("{ \"armed\": false }" + new string(' ', 100))));
+            Assert.False(SealedBox.LooksSealed(new byte[0]));
+            Assert.False(SealedBox.LooksSealed(null));
         }
     }
 
@@ -583,11 +767,53 @@ namespace Lotus.Tests
         {
             var content = new StoreContent
             {
-                Policy = new Policy { Armed = true, Storage = StorageMode.Block },
-                Password = PasswordRecord.Create("correct horse", 500)
+                Policy = new Policy { Armed = true, Storage = StorageMode.Block }
             };
             content.Policy.AddTrust(TrustEntry.ForDevice(Devices.Headset()));
             return content;
+        }
+
+        private static bool Contains(byte[] haystack, byte[] needle)
+        {
+            for (int i = 0; i + needle.Length <= haystack.Length; i++)
+            {
+                int j = 0;
+                while (j < needle.Length && haystack[i + j] == needle[j]) j++;
+                if (j == needle.Length) return true;
+            }
+            return false;
+        }
+
+        private static void AssertUnreadable(string path)
+        {
+            byte[] bytes = File.ReadAllBytes(path);
+            foreach (string word in new[] { "armed", "trusted", "storage", "VID_", "USB", "HyperX", "blocked" })
+            {
+                Assert.False(Contains(bytes, Encoding.UTF8.GetBytes(word)), Path.GetFileName(path) + " shows " + word);
+                Assert.False(Contains(bytes, Encoding.Unicode.GetBytes(word)), Path.GetFileName(path) + " shows " + word);
+            }
+        }
+
+        /// <summary>Writes a store the way LOTUS 1.1 did: readable JSON with a keyed checksum in front.</summary>
+        private static void WriteOldStore(SecureStore store, Policy policy, bool breakSeal = false)
+        {
+            byte[] key = new MachineKeyWrap().Unwrap(File.ReadAllBytes(store.KeyPath));
+            string payload = Lotus.Core.Json.Write(new Dictionary<string, object>
+            {
+                ["serial"] = 5.0,
+                ["policy"] = Lotus.Core.Json.Parse(policy.ToJson()),
+                ["password"] = new Dictionary<string, object>
+                {
+                    ["algorithm"] = "pbkdf2-sha256", ["iterations"] = 210000.0, ["salt"] = "c2FsdA==", ["hash"] = "aGFzaA=="
+                }
+            });
+            byte[] bytes = Encoding.UTF8.GetBytes(payload);
+            byte[] mac;
+            using (var hmac = new System.Security.Cryptography.HMACSHA256(key)) mac = hmac.ComputeHash(bytes);
+            if (breakSeal) payload = payload.Replace("\"armed\": true", "\"armed\": false");
+            File.WriteAllText(store.StorePath, "LOTUS-STORE-1\n" + Convert.ToBase64String(mac) + "\n" + payload,
+                new UTF8Encoding(false));
+            File.Delete(store.BackupPath);
         }
 
         [Fact]
@@ -608,23 +834,56 @@ namespace Lotus.Tests
             Assert.True(loaded.Content.Policy.Armed);
             Assert.Equal(StorageMode.Block, loaded.Content.Policy.Storage);
             Assert.Single(loaded.Content.Policy.Trusted);
-            Assert.True(loaded.Content.Password.Verify("correct horse"));
             Assert.Equal(1, loaded.Content.Serial);
         }
 
         [Fact]
-        public void An_edit_in_a_text_editor_breaks_the_seal()
+        public void Nothing_in_the_store_folder_can_be_read_by_someone_who_finds_it()
+        {
+            SecureStore store = Open();
+            store.Load();
+            StoreContent content = Armed();
+            store.Save(content);
+            store.Save(content);
+            var ledger = new Ledger();
+            ledger.Add(LedgerEntry.From(Devices.Stick(), Reason.StorageBlocked, DateTime.UtcNow));
+            store.SaveLedger(ledger);
+            store.SaveLedger(ledger);
+
+            string[] files = Directory.GetFiles(Path.Combine(folder, "secure"));
+            Assert.Contains(files, f => f.EndsWith("policy.dat"));
+            Assert.Contains(files, f => f.EndsWith("policy.dat.bak"));
+            Assert.Contains(files, f => f.EndsWith("ledger.dat"));
+            Assert.Contains(files, f => f.EndsWith("seal.key"));
+            foreach (string file in files) AssertUnreadable(file);
+        }
+
+        [Fact]
+        public void Changing_one_byte_of_the_store_breaks_the_seal()
         {
             SecureStore store = Open();
             store.Load();
             store.Save(Armed());
-            string text = File.ReadAllText(store.StorePath);
-            Assert.Contains("\"armed\": true", text);
-            File.WriteAllText(store.StorePath, text.Replace("\"armed\": true", "\"armed\": false"));
+            byte[] bytes = File.ReadAllBytes(store.StorePath);
+            bytes[bytes.Length / 2] ^= 0x10;
+            File.WriteAllBytes(store.StorePath, bytes);
 
             StoreLoad loaded = Open().Load();
             Assert.Equal(StoreState.Tampered, loaded.State);
             Assert.Contains("seal is broken", loaded.Problem);
+        }
+
+        [Fact]
+        public void A_readable_policy_put_in_place_of_the_store_is_refused()
+        {
+            SecureStore store = Open();
+            store.Load();
+            store.Save(Armed());
+            File.WriteAllText(store.StorePath, new Policy().ToJson());
+
+            StoreLoad loaded = Open().Load();
+            Assert.Equal(StoreState.Tampered, loaded.State);
+            Assert.Contains("not a LOTUS store", loaded.Problem);
         }
 
         [Fact]
@@ -698,7 +957,7 @@ namespace Lotus.Tests
         }
 
         [Fact]
-        public void The_policy_file_of_the_earlier_version_is_taken_over()
+        public void The_policy_file_of_version_1_0_is_taken_over()
         {
             Directory.CreateDirectory(folder);
             File.WriteAllText(Path.Combine(folder, "policy.json"),
@@ -707,7 +966,40 @@ namespace Lotus.Tests
             StoreLoad loaded = Open().Load();
             Assert.Equal(StoreState.Legacy, loaded.State);
             Assert.True(loaded.Content.Policy.Armed);
-            Assert.Null(loaded.Content.Password);
+        }
+
+        [Fact]
+        public void The_store_of_version_1_1_is_taken_over_and_its_readable_copy_is_not_kept()
+        {
+            SecureStore first = Open();
+            first.Load();
+            first.Save(new StoreContent()); // gives the folder a key, as 1.1 did
+            WriteOldStore(first, Armed().Policy);
+
+            SecureStore store = Open();
+            StoreLoad loaded = store.Load();
+            Assert.Equal(StoreState.Legacy, loaded.State);
+            Assert.True(loaded.Content.Policy.Armed);
+            Assert.Single(loaded.Content.Policy.Trusted);
+            Assert.Equal(5, loaded.Content.Serial);
+
+            store.Save(loaded.Content);
+            foreach (string file in Directory.GetFiles(Path.Combine(folder, "secure"))) AssertUnreadable(file);
+            Assert.Equal(StoreState.Ok, Open().Load().State);
+            Assert.Equal(6, Open().Load().Content.Serial);
+        }
+
+        [Fact]
+        public void A_store_of_version_1_1_that_was_edited_is_refused()
+        {
+            SecureStore first = Open();
+            first.Load();
+            first.Save(new StoreContent());
+            WriteOldStore(first, Armed().Policy, breakSeal: true);
+
+            StoreLoad loaded = Open().Load();
+            Assert.Equal(StoreState.Tampered, loaded.State);
+            Assert.Contains("seal is broken", loaded.Problem);
         }
 
         [Fact]
@@ -728,16 +1020,79 @@ namespace Lotus.Tests
         }
 
         [Fact]
-        public void The_policy_can_be_read_for_display_without_the_key()
+        public void The_list_of_blocked_devices_is_kept_in_the_same_way()
         {
             SecureStore store = Open();
             store.Load();
             store.Save(Armed());
+            var ledger = new Ledger { ReadOnlyOwned = true };
+            ledger.Add(LedgerEntry.From(Devices.Stick(), Reason.StorageBlocked, DateTime.UtcNow));
+            store.SaveLedger(ledger);
 
-            StoreContent content = SecureStore.ReadUnverified(store.StorePath);
-            Assert.True(content.Policy.Armed);
-            Assert.NotNull(content.Password);
-            Assert.Null(SecureStore.ReadUnverified(Path.Combine(folder, "nothing.dat")));
+            SecureStore again = Open();
+            again.Load();
+            Ledger back = again.LoadLedger(out string error);
+            Assert.Null(error);
+            Assert.True(back.ReadOnlyOwned);
+            Assert.True(back.Contains(Devices.StickId));
+        }
+
+        [Fact]
+        public void A_changed_list_of_blocked_devices_is_refused_and_reported()
+        {
+            SecureStore store = Open();
+            store.Load();
+            store.Save(Armed());
+            var ledger = new Ledger();
+            ledger.Add(LedgerEntry.From(Devices.Stick(), Reason.StorageBlocked, DateTime.UtcNow));
+            store.SaveLedger(ledger);
+            byte[] bytes = File.ReadAllBytes(store.LedgerPath);
+            bytes[40] ^= 0x01;
+            File.WriteAllBytes(store.LedgerPath, bytes);
+
+            Ledger back = store.LoadLedger(out string error);
+            Assert.Equal(0, back.Count);
+            Assert.Contains("seal is broken", error);
+        }
+
+        [Fact]
+        public void A_list_of_blocked_devices_cannot_stand_in_for_the_policy()
+        {
+            SecureStore store = Open();
+            store.Load();
+            store.Save(Armed());
+            store.SaveLedger(new Ledger());
+            File.Copy(store.LedgerPath, store.StorePath, true);
+
+            StoreLoad loaded = Open().Load();
+            Assert.Equal(StoreState.Tampered, loaded.State);
+            Assert.Contains("another kind", loaded.Problem);
+        }
+
+        [Fact]
+        public void A_reset_throws_the_policy_away_and_keeps_the_list_of_blocked_devices()
+        {
+            SecureStore store = Open();
+            store.Load();
+            store.Save(Armed());
+            var ledger = new Ledger();
+            ledger.Add(LedgerEntry.From(Devices.Stick(), Reason.StorageBlocked, DateTime.UtcNow));
+            store.SaveLedger(ledger);
+            File.WriteAllText(store.StorePath, "wrecked");
+
+            SecureStore damaged = Open();
+            Assert.Equal(StoreState.Tampered, damaged.Load().State);
+            damaged.ResetPolicy();
+
+            SecureStore fresh = Open();
+            // The key is still there, so a missing store would count as tampering.
+            // After a reset the service saves a new, disarmed policy straight away.
+            fresh.Load();
+            fresh.Save(new StoreContent());
+            StoreLoad loaded = Open().Load();
+            Assert.Equal(StoreState.Ok, loaded.State);
+            Assert.False(loaded.Content.Policy.Armed);
+            Assert.True(fresh.LoadLedger(out string _).Contains(Devices.StickId));
         }
 
         [Fact]
@@ -747,6 +1102,8 @@ namespace Lotus.Tests
             store.Load();
             store.Save(Armed());
             store.Save(Armed());
+            store.SaveLedger(new Ledger());
+            store.SaveLedger(new Ledger());
             store.Erase();
             Assert.Empty(Directory.GetFiles(Path.Combine(folder, "secure")));
         }
@@ -755,8 +1112,6 @@ namespace Lotus.Tests
     /// <summary>Runs the real service loop against a pretend USB bus and talks to it over a real pipe.</summary>
     public class GuardWorkerTests : IDisposable
     {
-        private const string Password = "correct horse battery";
-
         private readonly string folder = Path.Combine(Path.GetTempPath(), "lotus-guard-" + Guid.NewGuid().ToString("N"));
         private readonly string pipeName = "LotusGuard.Test." + Guid.NewGuid().ToString("N");
         private readonly SimulatedBackend bus = new SimulatedBackend();
@@ -776,7 +1131,7 @@ namespace Lotus.Tests
             try { Directory.Delete(folder, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
 
-        private GuardClient Start()
+        private GuardClient Start(bool setupAskedForReset = false)
         {
             worker?.Dispose();
             worker = new GuardWorker(new GuardOptions
@@ -787,7 +1142,7 @@ namespace Lotus.Tests
                 AdministratorsOnly = false,
                 HardenFolders = false,
                 WatchDevices = false,
-                PasswordIterations = 300
+                TakeResetRequest = () => setupAskedForReset
             });
             worker.StopRequested += purpose => { lock (stops) stops.Add(purpose); };
             worker.Start();
@@ -822,37 +1177,40 @@ namespace Lotus.Tests
         }
 
         [Fact]
-        public void A_new_installation_is_disarmed_and_has_no_password()
+        public void A_new_installation_is_disarmed()
         {
             GuardReply status = Start().Status();
             Assert.True(status.Ok);
             Assert.False(status.Armed);
-            Assert.False(status.HasPassword);
             Assert.False(status.Lockdown);
             Assert.True(File.Exists(LotusPaths.StoreFile));
         }
 
         [Fact]
-        public void Settings_can_be_saved_without_a_password_while_disarmed()
+        public void A_policy_is_applied_without_any_password()
         {
             GuardClient client = Start();
-            GuardReply reply = client.Apply(Json(new Policy { Storage = StorageMode.Block }), "");
+            GuardReply reply = client.Apply(Json(StorageBlocked()));
             Assert.True(reply.Ok, reply.Message);
-            Assert.False(client.Status().HasPassword);
+            Assert.True(reply.Armed);
+
+            Assert.True(client.Apply(Json(new Policy())).Ok);
+            Assert.False(client.Status().Armed);
         }
 
         [Fact]
-        public void Arming_for_the_first_time_needs_a_password()
+        public void A_request_from_version_1_1_with_password_fields_still_works()
         {
             GuardClient client = Start();
-            Assert.Equal(GuardProtocol.ErrNewPasswordNeeded, client.Apply(Json(StorageBlocked()), "").Code);
-            Assert.Equal(GuardProtocol.ErrWeakPassword, client.Apply(Json(StorageBlocked()), "", "short").Code);
-            Assert.False(client.Status().Armed);
-
-            GuardReply reply = client.Apply(Json(StorageBlocked()), "", Password);
+            GuardReply reply = client.Send(new Dictionary<string, object>
+            {
+                ["op"] = GuardProtocol.OpApply,
+                ["password"] = "whatever",
+                ["newPassword"] = "whatever else",
+                ["policy"] = Lotus.Core.Json.Parse(Json(StorageBlocked()))
+            });
             Assert.True(reply.Ok, reply.Message);
-            Assert.True(reply.Armed);
-            Assert.True(reply.HasPassword);
+            Assert.False(reply.Data.ContainsKey("hasPassword"));
         }
 
         [Fact]
@@ -861,63 +1219,29 @@ namespace Lotus.Tests
             bus.Plug(Devices.Stick());
             bus.Plug(Devices.Keyboard());
             GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
 
             Assert.True(Eventually(() => bus.Scan().Single(d => d.InstanceId == Devices.StickId).IsOff));
             Assert.False(bus.Scan().Single(d => d.InstanceId == Devices.KeyboardId).IsOff);
         }
 
         [Fact]
-        public void Every_later_change_needs_the_password()
+        public void The_service_hands_out_the_policy_and_the_list_of_blocked_devices()
         {
+            bus.Plug(Devices.Stick());
             GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
+            Policy policy = StorageBlocked();
+            policy.AddTrust(TrustEntry.ForDevice(Devices.Headset()));
+            Assert.True(client.Apply(Json(policy)).Ok);
+            Assert.True(Eventually(() => bus.Scan().Single().IsOff));
 
-            Assert.Equal(GuardProtocol.ErrPasswordNeeded, client.Apply(Json(new Policy()), "").Code);
-            Assert.Equal(GuardProtocol.ErrWrongPassword, client.Apply(Json(new Policy()), "wrong password").Code);
-            Assert.True(client.Status().Armed);
-            Assert.Contains(Events(), e => e.Type == EventTypes.Security && e.Message.Contains("wrong LOTUS password"));
-
-            Assert.True(client.Apply(Json(new Policy()), Password).Ok);
-            Assert.False(client.Status().Armed);
-        }
-
-        [Fact]
-        public void Disarming_does_not_remove_the_password()
-        {
-            GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
-            Assert.True(client.Apply(Json(new Policy()), Password).Ok);
-            Assert.True(client.Status().HasPassword);
-            Assert.Equal(GuardProtocol.ErrPasswordNeeded, client.Apply(Json(StorageBlocked()), "").Code);
-        }
-
-        [Fact]
-        public void Guessing_is_slowed_down()
-        {
-            GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
-            for (int i = 0; i < 5; i++)
-            {
-                Assert.Equal(GuardProtocol.ErrWrongPassword, client.Verify("guess number " + i).Code);
-            }
-
-            GuardReply locked = client.Verify(Password);
-            Assert.Equal(GuardProtocol.ErrLockedOut, locked.Code);
-            Assert.InRange(locked.RetryAfterSeconds, 1, 30);
-        }
-
-        [Fact]
-        public void The_password_can_be_changed_with_the_old_one()
-        {
-            GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
-
-            Assert.Equal(GuardProtocol.ErrWrongPassword, client.SetPassword("not the password", "another long one").Code);
-            Assert.Equal(GuardProtocol.ErrWeakPassword, client.SetPassword(Password, "tiny").Code);
-            Assert.True(client.SetPassword(Password, "another long one").Ok);
-            Assert.Equal(GuardProtocol.ErrWrongPassword, client.Verify(Password).Code);
-            Assert.True(client.Verify("another long one").Ok);
+            GuardReply state = client.Read();
+            Assert.True(state.Ok);
+            Policy read = state.ReadPolicy();
+            Assert.True(read.Armed);
+            Assert.Equal(StorageMode.Block, read.Storage);
+            Assert.Single(read.Trusted);
+            Assert.True(Eventually(() => client.Read().ReadLedger().Contains(Devices.StickId)));
         }
 
         [Fact]
@@ -926,13 +1250,11 @@ namespace Lotus.Tests
             GuardClient client = Start();
             Policy policy = StorageBlocked();
             policy.AddTrust(TrustEntry.ForDevice(Devices.Headset()));
-            Assert.True(client.Apply(Json(policy), "", Password).Ok);
+            Assert.True(client.Apply(Json(policy)).Ok);
 
             client = Start();
-            GuardReply status = client.Status();
-            Assert.True(status.Armed);
-            Assert.True(status.HasPassword);
-            Assert.Single(SecureStore.ReadUnverified(LotusPaths.StoreFile).Policy.Trusted);
+            Assert.True(client.Status().Armed);
+            Assert.Single(client.Read().ReadPolicy().Trusted);
         }
 
         [Fact]
@@ -940,30 +1262,51 @@ namespace Lotus.Tests
         {
             bus.Plug(Devices.Stick());
             GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
             Assert.True(Eventually(() => bus.Scan().Single().IsOff));
 
-            string text = File.ReadAllText(LotusPaths.StoreFile);
-            File.WriteAllText(LotusPaths.StoreFile, text.Replace("\"armed\": true", "\"armed\": false"));
+            byte[] written = File.ReadAllBytes(LotusPaths.StoreFile);
+            var edited = (byte[])written.Clone();
+            edited[edited.Length / 2] ^= 0x01;
+            File.WriteAllBytes(LotusPaths.StoreFile, edited);
             worker.Kick();
 
             Assert.True(Eventually(() => Events().Any(e => e.Type == EventTypes.Tamper)));
-            Assert.True(Eventually(() => File.ReadAllText(LotusPaths.StoreFile).Contains("\"armed\": true")));
+            Assert.True(Eventually(() =>
+            {
+                // LOTUS writes a fresh file with a new serial number, so it is not the old bytes again.
+                var store = new SecureStore(LotusPaths.SecureDir);
+                StoreLoad loaded = store.Load();
+                return loaded.State == StoreState.Ok && loaded.Content.Policy.Armed;
+            }));
             Assert.True(client.Status().Armed);
             Assert.True(bus.Scan().Single().IsOff);
+        }
+
+        [Fact]
+        public void A_readable_policy_dropped_into_the_folder_changes_nothing()
+        {
+            GuardClient client = Start();
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
+
+            File.WriteAllText(LotusPaths.StoreFile, new Policy().ToJson());
+            worker.Kick();
+
+            Assert.True(Eventually(() => Events().Any(e => e.Type == EventTypes.Tamper)));
+            Assert.True(Eventually(() => SealedBox.LooksSealed(File.ReadAllBytes(LotusPaths.StoreFile))));
+            Assert.True(client.Status().Armed);
         }
 
         [Fact]
         public void A_deleted_store_is_put_back_while_the_service_runs()
         {
             GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
             File.Delete(LotusPaths.StoreFile);
             worker.Kick();
 
             Assert.True(Eventually(() => File.Exists(LotusPaths.StoreFile)));
             Assert.True(client.Status().Armed);
-            Assert.True(client.Verify(Password).Ok);
         }
 
         [Fact]
@@ -973,7 +1316,7 @@ namespace Lotus.Tests
             bus.Plug(Devices.Headset());
             bus.Plug(Devices.Keyboard());
             GuardClient client = Start();
-            Assert.True(client.Apply(Json(new Policy()), "").Ok);
+            Assert.True(client.Apply(Json(new Policy())).Ok);
             worker.Dispose();
             worker = null;
 
@@ -987,12 +1330,50 @@ namespace Lotus.Tests
             Assert.True(Eventually(() => bus.Scan().Single(d => d.InstanceId == Devices.StickId).IsOff));
             Assert.True(bus.Scan().Single(d => d.InstanceId == Devices.HeadsetId).IsOff);
             Assert.False(bus.Scan().Single(d => d.InstanceId == Devices.KeyboardId).IsOff); // keyboards stay usable
-            Assert.Equal(GuardProtocol.ErrLockdown, client.Apply(Json(new Policy()), "").Code);
+            Assert.Equal(GuardProtocol.ErrLockdown, client.Apply(Json(new Policy())).Code);
             Assert.Contains(Events(), e => e.Type == EventTypes.Tamper && e.Message.Contains("locked down"));
         }
 
         [Fact]
-        public void The_policy_file_of_the_earlier_version_is_moved_into_the_store()
+        public void Running_setup_again_ends_a_lockdown_and_frees_the_devices()
+        {
+            bus.Plug(Devices.Stick());
+            bus.Plug(Devices.Headset());
+            GuardClient client = Start();
+            Assert.True(client.Apply(Json(new Policy())).Ok);
+            worker.Dispose();
+            worker = null;
+            File.WriteAllText(LotusPaths.StoreFile, "wrecked");
+            File.Delete(LotusPaths.StoreFile + ".bak");
+
+            client = Start();
+            Assert.True(client.Status().Lockdown);
+            Assert.True(Eventually(() => bus.Scan().All(d => d.IsOff)));
+
+            // A restart alone does not help.
+            client = Start();
+            Assert.True(client.Status().Lockdown);
+
+            client = Start(setupAskedForReset: true);
+            GuardReply status = client.Status();
+            Assert.False(status.Lockdown);
+            Assert.False(status.Armed);
+            Assert.True(Eventually(() => bus.Scan().All(d => !d.IsOff)));
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
+        }
+
+        [Fact]
+        public void A_reset_request_does_nothing_to_a_healthy_store()
+        {
+            GuardClient client = Start();
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
+
+            client = Start(setupAskedForReset: true);
+            Assert.True(client.Status().Armed);
+        }
+
+        [Fact]
+        public void The_policy_file_of_version_1_0_is_moved_into_the_store()
         {
             Directory.CreateDirectory(folder);
             var old = new Policy { Armed = true, Storage = StorageMode.Block };
@@ -1001,15 +1382,34 @@ namespace Lotus.Tests
             GuardClient client = Start();
             Assert.True(client.Status().Armed);
             Assert.False(File.Exists(LotusPaths.LegacyPolicyFile));
-            // It has no password yet, so the next change has to set one.
-            Assert.Equal(GuardProtocol.ErrNewPasswordNeeded, client.Apply(Json(old), "").Code);
+            Assert.True(SealedBox.LooksSealed(File.ReadAllBytes(LotusPaths.StoreFile)));
+        }
+
+        [Fact]
+        public void The_readable_list_of_blocked_devices_from_version_1_1_is_moved_into_the_store()
+        {
+            bus.Plug(Devices.Stick());
+            bus.Block(Devices.StickId, out BlockMethod _);
+            Directory.CreateDirectory(LotusPaths.SecureDir);
+            File.WriteAllText(LotusPaths.LegacyPolicyFile, StorageBlocked().ToJson());
+            var old = new Ledger();
+            old.Add(LedgerEntry.From(Devices.Stick(), Reason.StorageBlocked, DateTime.UtcNow));
+            string oldPath = Path.Combine(LotusPaths.SecureDir, "ledger.json");
+            File.WriteAllText(oldPath, old.ToJson());
+
+            GuardClient client = Start();
+            Assert.False(File.Exists(oldPath));
+            Assert.True(File.Exists(LotusPaths.LedgerFile));
+            Assert.True(client.Read().ReadLedger().Contains(Devices.StickId));
+            Assert.True(bus.Scan().Single().IsOff);
+            Assert.DoesNotContain(Events(), e => e.Type == EventTypes.Blocked); // it was blocked already
         }
 
         [Fact]
         public void A_device_that_arrives_is_judged_at_once()
         {
             GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
             Assert.True(Eventually(() => Events().Any(e => e.Type == EventTypes.PolicyChanged &&
                                                            e.Message.StartsWith("Policy changed"))));
             Thread.Sleep(150); // let the pass that follows the change finish
@@ -1022,16 +1422,15 @@ namespace Lotus.Tests
         }
 
         [Fact]
-        public void Setup_can_stop_the_service_only_with_the_password()
+        public void Setup_can_stop_the_service_for_an_update()
         {
             GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
 
-            Assert.Equal(GuardProtocol.ErrWrongPassword, client.Stop("nope nope nope", GuardProtocol.PurposeUpdate).Code);
-            Assert.Equal(GuardProtocol.ErrBadRequest, client.Stop(Password, "because").Code);
+            Assert.Equal(GuardProtocol.ErrBadRequest, client.Stop("because").Code);
             lock (stops) Assert.Empty(stops);
 
-            Assert.True(client.Stop(Password, GuardProtocol.PurposeUpdate).Ok);
+            Assert.True(client.Stop(GuardProtocol.PurposeUpdate).Ok);
             Assert.True(Eventually(() => { lock (stops) return stops.Contains(GuardProtocol.PurposeUpdate); }));
             Assert.True(File.Exists(LotusPaths.StoreFile)); // an update keeps the policy
         }
@@ -1042,16 +1441,15 @@ namespace Lotus.Tests
             bus.Plug(Devices.Stick());
             bus.Remember(Devices.Phone());
             GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
+            Assert.True(client.Apply(Json(StorageBlocked())).Ok);
             Assert.True(Eventually(() => bus.Scan().Single().IsOff));
             Assert.True(Eventually(() => bus.HasDisabledMark(Devices.PhoneId)));
 
-            Assert.True(client.Stop(Password, GuardProtocol.PurposeUninstall).Ok);
+            Assert.True(client.Stop(GuardProtocol.PurposeUninstall).Ok);
 
             Assert.False(bus.Scan().Single().IsOff);
             Assert.False(bus.HasDisabledMark(Devices.PhoneId));
-            Assert.False(File.Exists(LotusPaths.StoreFile));
-            Assert.False(File.Exists(LotusPaths.LedgerFile));
+            Assert.Empty(Directory.GetFiles(LotusPaths.SecureDir));
             Assert.True(Eventually(() => { lock (stops) return stops.Contains(GuardProtocol.PurposeUninstall); }));
         }
 
@@ -1061,6 +1459,9 @@ namespace Lotus.Tests
             GuardClient client = Start();
             GuardReply unknown = client.Send(new Dictionary<string, object> { ["op"] = "format_c" });
             Assert.Equal(GuardProtocol.ErrBadRequest, unknown.Code);
+
+            GuardReply gone = client.Send(new Dictionary<string, object> { ["op"] = "set_password" });
+            Assert.Equal(GuardProtocol.ErrBadRequest, gone.Code);
 
             GuardReply noPolicy = client.Send(new Dictionary<string, object> { ["op"] = GuardProtocol.OpApply });
             Assert.Equal(GuardProtocol.ErrBadRequest, noPolicy.Code);
@@ -1091,13 +1492,18 @@ namespace Lotus.Tests
         }
 
         [Fact]
-        public void The_status_file_tells_the_notifier_whether_LOTUS_is_armed()
+        public void The_status_file_says_whether_LOTUS_is_armed_and_nothing_about_the_policy()
         {
             GuardClient client = Start();
-            Assert.True(client.Apply(Json(StorageBlocked()), "", Password).Ok);
+            Policy policy = StorageBlocked();
+            policy.AddTrust(TrustEntry.ForDevice(Devices.Headset()));
+            Assert.True(client.Apply(Json(policy)).Ok);
             Assert.True(Eventually(() => File.Exists(LotusPaths.StatusFile) &&
                                          File.ReadAllText(LotusPaths.StatusFile).Contains("\"armed\": true")));
-            Assert.DoesNotContain("salt", File.ReadAllText(LotusPaths.StatusFile));
+            string status = File.ReadAllText(LotusPaths.StatusFile);
+            Assert.DoesNotContain("storage", status);
+            Assert.DoesNotContain("trusted", status);
+            Assert.DoesNotContain("VID_", status);
         }
     }
 }

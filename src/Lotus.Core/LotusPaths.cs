@@ -43,7 +43,7 @@ namespace Lotus.Core
         public static string SecureDir => Path.Combine(DataDir, "secure");
 
         public static string StoreFile => Path.Combine(SecureDir, "policy.dat");
-        public static string LedgerFile => Path.Combine(SecureDir, "ledger.json");
+        public static string LedgerFile => Path.Combine(SecureDir, "ledger.dat");
         /// <summary>A few facts anyone may read, such as whether LOTUS is armed.</summary>
         public static string StatusFile => Path.Combine(DataDir, "status.json");
         /// <summary>Where LOTUS 1.0 kept its policy. Read once, when a newer version takes over.</summary>

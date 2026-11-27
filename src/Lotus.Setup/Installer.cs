@@ -44,7 +44,7 @@ namespace Lotus.Setup
             "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
         // What LOTUS Guard runs with: administrators may look at it and start it,
         // but not stop it, reconfigure it or delete it. Setup lifts this again
-        // before an update or a removal, after the LOTUS password has been checked.
+        // before an update or a removal.
         private const string GuardedServiceRights =
             "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRCWD;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
 
@@ -52,9 +52,6 @@ namespace Lotus.Setup
         private const string RunKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
 
         private readonly Action<string> log;
-
-        /// <summary>The LOTUS password, when one is set. Needed to update or remove LOTUS.</summary>
-        public string Password = "";
 
         /// <summary>Things that went wrong without stopping the run. Shown at the end.</summary>
         public readonly List<string> Warnings = new List<string>();
@@ -87,85 +84,32 @@ namespace Lotus.Setup
         private static string SecureDir => Path.Combine(DataDir, "secure");
         private static string StoreFile => Path.Combine(SecureDir, "policy.dat");
 
-        // ================= the LOTUS password =================
-
-        /// <summary>What setup knows about the password before it starts work.</summary>
-        public sealed class PasswordState
+        /// <summary>
+        /// True when LOTUS is locked down because its policy store was damaged.
+        /// Installing again is the way out of that.
+        /// </summary>
+        public static bool IsLockedDown()
         {
-            /// <summary>A password is set, so setup has to ask for it.</summary>
-            public bool Needed;
-            /// <summary>The store is damaged. Setup may then reset LOTUS without a password.</summary>
-            public bool Lockdown;
-        }
-
-        public static PasswordState ReadPasswordState()
-        {
-            var state = new PasswordState();
             try
             {
-                GuardReply status = new GuardClient().Status();
-                state.Needed = status.HasPassword && !status.Lockdown;
-                state.Lockdown = status.Lockdown;
-                return state;
+                return new GuardClient().Status().Lockdown;
             }
             catch (GuardUnavailableException)
             {
                 // Not running, or a version from before the control channel existed.
             }
-            state.Needed = ReadStoredPassword() != null;
-            return state;
-        }
-
-        /// <summary>
-        /// Checks a password without changing anything. Returns null when it is
-        /// right or none is needed, otherwise what to tell the person.
-        /// </summary>
-        public static string CheckPassword(string password)
-        {
             try
             {
-                GuardReply reply = new GuardClient().Verify(password);
-                return reply.Ok || reply.Lockdown ? null : reply.Message;
+                string status = Path.Combine(DataDir, "status.json");
+                if (!File.Exists(status) || new FileInfo(status).Length > 64 * 1024) return false;
+                Dictionary<string, object> root = Json.AsObject(Json.Parse(File.ReadAllText(status)));
+                return root != null && Json.GetBool(root, "lockdown", false);
             }
-            catch (GuardUnavailableException)
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                       ex is FormatException)
             {
+                return false;
             }
-            PasswordRecord stored = ReadStoredPassword();
-            if (stored == null || stored.Verify(password ?? "")) return null;
-            return string.IsNullOrEmpty(password) ? "Enter the LOTUS password." : "That is not the LOTUS password.";
-        }
-
-        /// <summary>
-        /// Reads the password record straight from the policy store, for the case
-        /// that the service is not running. Returns null when no password is set or
-        /// the store cannot be read.
-        /// </summary>
-        private static PasswordRecord ReadStoredPassword()
-        {
-            // Only a folder that LOTUS set up itself counts. Otherwise anyone could
-            // plant a store with a password in it and lock setup out of a PC that
-            // never had LOTUS on it.
-            if (FolderGuard.Inspect(DataDir) != null || FolderGuard.IsReparsePoint(SecureDir)) return null;
-            foreach (string path in new[] { StoreFile, StoreFile + ".bak" })
-            {
-                try
-                {
-                    if (!File.Exists(path) || new FileInfo(path).Length > 4 * 1024 * 1024) continue;
-                    string text = File.ReadAllText(path);
-                    // Two header lines, then the JSON payload.
-                    int first = text.IndexOf('\n');
-                    int second = first < 0 ? -1 : text.IndexOf('\n', first + 1);
-                    if (second < 0) continue;
-                    Dictionary<string, object> root = Json.AsObject(Json.Parse(text.Substring(second + 1)));
-                    if (root == null || !root.TryGetValue("password", out object value)) continue;
-                    return PasswordRecord.FromJsonObject(Json.AsObject(value));
-                }
-                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
-                                           ex is FormatException)
-                {
-                }
-            }
-            return null;
         }
 
         private static string StartMenuLink =>
@@ -199,9 +143,9 @@ namespace Lotus.Setup
             bool update = IsInstalled;
             log(update ? "Updating LOTUS in " + InstallDir : "Installing LOTUS to " + InstallDir);
 
-            bool lockdown = ReadPasswordState().Lockdown;
+            bool lockdown = IsLockedDown();
             StopService(GuardProtocol.PurposeUpdate);
-            if (lockdown) ResetDamagedStore();
+            if (lockdown) AskForReset();
             StopRunningCopies();
             CancelPendingDeletes();
             CopyFiles();
@@ -220,24 +164,22 @@ namespace Lotus.Setup
 
         /// <summary>
         /// LOTUS was locked down because its policy store could not be trusted.
-        /// Installing again is the way out: the store is thrown away and LOTUS
-        /// starts disarmed, as on a new PC. The block ledger stays, so that the
-        /// devices the lockdown switched off are switched back on.
+        /// Installing again is the way out. Only the service may touch the store,
+        /// so setup leaves it a note. When the service starts and still finds the
+        /// store damaged, it throws the store away and starts disarmed, as on a
+        /// new PC, and switches the devices the lockdown blocked back on.
         /// </summary>
-        private void ResetDamagedStore()
+        private void AskForReset()
         {
-            log("Resetting the damaged policy store");
-            foreach (string name in new[] { "policy.dat", "policy.dat.bak", "policy.dat.tmp", "seal.key", "seal.key.tmp" })
+            log("Asking LOTUS Guard to reset the damaged policy store");
+            try
             {
-                string path = Path.Combine(SecureDir, name);
-                try
-                {
-                    FolderGuard.DeleteFile(path);
-                }
-                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
-                {
-                    Warn("Could not delete " + path + ". " + ex.Message);
-                }
+                ResetRequest.Ask();
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                       ex is System.Security.SecurityException)
+            {
+                Warn("Could not ask for the reset. " + ex.Message + " LOTUS may still be locked down.");
             }
         }
 
@@ -606,7 +548,7 @@ namespace Lotus.Setup
 
             // Over the control channel the service releases every device and erases
             // its own data before it stops. Without the channel, setup does the same
-            // by hand after checking the password itself.
+            // by hand.
             bool releasedByGuard = StopService(GuardProtocol.PurposeUninstall);
             if (!releasedByGuard) ReleaseDevices();
             DeleteService();
@@ -630,7 +572,7 @@ namespace Lotus.Setup
                 return;
             }
             log("Switching blocked devices back on");
-            int code = Run(guard, "--release-all", 120000, Password);
+            int code = Run(guard, "--release-all", 120000);
             if (code != 0)
             {
                 Warn("Some blocked devices could not be switched back on. " +
@@ -666,6 +608,7 @@ namespace Lotus.Setup
                     // LOTUS 1.0 let Windows register an event log source for the service.
                     machine.DeleteSubKeyTree(EventLogKey, false);
                 }
+                ResetRequest.Forget();
                 DeleteOldSetupLog();
             }
             catch (Exception ex)
@@ -815,44 +758,34 @@ namespace Lotus.Setup
         /// </summary>
         private bool StopService(string purpose)
         {
-            if (!ServiceControl.Exists(ServiceName))
-            {
-                RequireStoredPassword();
-                return false;
-            }
+            if (!ServiceControl.Exists(ServiceName)) return false;
 
             bool running;
             using (var controller = new ServiceController(ServiceName))
             {
                 running = controller.Status != ServiceControllerStatus.Stopped;
             }
-            if (!running)
-            {
-                RequireStoredPassword();
-                return false;
-            }
+            if (!running) return false;
 
             log("Stopping LOTUS Guard");
             try
             {
-                GuardReply reply = new GuardClient().Stop(Password, purpose);
-                if (!reply.Ok)
+                GuardReply reply = new GuardClient().Stop(purpose);
+                if (reply.Ok)
                 {
-                    throw new SetupException(reply.Code == GuardProtocol.ErrPasswordNeeded
-                        ? "The LOTUS password is needed for this."
-                        : reply.Message);
+                    if (reply.Message.Length > 0) Warn(reply.Message);
+                    WaitUntilStopped(40);
+                    return purpose == GuardProtocol.PurposeUninstall;
                 }
-                if (reply.Message.Length > 0) Warn(reply.Message);
-                WaitUntilStopped(40);
-                return purpose == GuardProtocol.PurposeUninstall;
+                // LOTUS 1.1 with a password set refuses here. This version has no
+                // password, so the service is stopped the hard way below.
             }
             catch (GuardUnavailableException)
             {
                 // LOTUS 1.0 has no control channel, and a service that hangs has none
-                // that answers. Check the password here and stop it the hard way.
+                // that answers.
             }
 
-            RequireStoredPassword();
             UnprotectService();
             try
             {
@@ -875,17 +808,6 @@ namespace Lotus.Setup
 
             EndServiceProcess();
             return false;
-        }
-
-        private void RequireStoredPassword()
-        {
-            PasswordRecord stored = ReadStoredPassword();
-            if (stored != null && !stored.Verify(Password ?? ""))
-            {
-                throw new SetupException(string.IsNullOrEmpty(Password)
-                    ? "The LOTUS password is needed for this."
-                    : "That is not the LOTUS password.");
-            }
         }
 
         private void WaitUntilStopped(int seconds)
@@ -968,8 +890,7 @@ namespace Lotus.Setup
             }
         }
 
-        /// <param name="password">Handed to the program in its environment, never on its command line.</param>
-        private int Run(string file, string arguments, int timeoutMs, string password = null)
+        private int Run(string file, string arguments, int timeoutMs)
         {
             try
             {
@@ -979,7 +900,6 @@ namespace Lotus.Setup
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
-                if (!string.IsNullOrEmpty(password)) start.EnvironmentVariables["LOTUS_PASSWORD"] = password;
                 using (Process process = Process.Start(start))
                 {
                     if (!process.WaitForExit(timeoutMs))

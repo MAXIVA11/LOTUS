@@ -19,12 +19,6 @@ namespace Lotus.App
         private readonly DispatcherTimer timer;
         private bool reading;
         private TaskCompletionSource<bool> overlayResult;
-        private PasswordAsk overlayAsk = PasswordAsk.None;
-        // The password is kept for a few minutes after it was last used, so that
-        // trusting three devices in a row does not ask three times.
-        private static readonly TimeSpan PasswordMemory = TimeSpan.FromMinutes(5);
-        private string sessionPassword;
-        private DateTime sessionPasswordUsed = DateTime.MinValue;
 
         public MainWindow(IAppBackend backend)
         {
@@ -41,11 +35,7 @@ namespace Lotus.App
                 Refresh();
                 timer.Start();
             };
-            Closed += (s, e) =>
-            {
-                timer.Stop();
-                sessionPassword = null;
-            };
+            Closed += (s, e) => timer.Stop();
             StateChanged += (s, e) => OnWindowStateChanged();
             PreviewKeyDown += OnPreviewKeyDown;
         }
@@ -171,41 +161,6 @@ namespace Lotus.App
             await Save(vm.Finish(plan, trust), true);
         }
 
-        private async void OnChangePassword(object sender, RoutedEventArgs e)
-        {
-            bool change = vm.HasPassword;
-            string error = "";
-            while (true)
-            {
-                PasswordAnswer answer = await AskPassword(new ConfirmRequest
-                {
-                    Title = change ? "CHANGE PASSWORD" : "SET A PASSWORD",
-                    Intro = change
-                        ? "Enter the current LOTUS password and choose a new one."
-                        : "Choose a LOTUS password. Every later change to the policy asks for it, and LOTUS cannot recover it if it is lost.",
-                    ConfirmText = change ? "CHANGE" : "SET",
-                    Ask = change ? PasswordAsk.Change : PasswordAsk.Create,
-                    Error = error
-                });
-                if (answer == null) return;
-
-                SaveResult result = await Task.Run(() => backend.ChangePassword(answer.Current, answer.New));
-                if (result.Ok)
-                {
-                    Remember(answer.New);
-                    Refresh();
-                    return;
-                }
-                error = result.Message;
-                if (result.Code != GuardProtocol.ErrWrongPassword && result.Code != GuardProtocol.ErrWeakPassword &&
-                    result.Code != GuardProtocol.ErrPasswordNeeded && result.Code != GuardProtocol.ErrLockedOut)
-                {
-                    ShowMessage("THE PASSWORD WAS NOT CHANGED", result.Message);
-                    return;
-                }
-            }
-        }
-
         private void OnStartGuard(object sender, RoutedEventArgs e)
         {
             string error = backend.StartGuard();
@@ -286,108 +241,30 @@ namespace Lotus.App
             }
         }
 
-        private void Remember(string password)
-        {
-            sessionPassword = password;
-            sessionPasswordUsed = DateTime.UtcNow;
-        }
-
-        /// <summary>
-        /// Sends a policy to LOTUS Guard. The guard decides whether a password is
-        /// needed, and this asks for it as often as it takes. Returns true once the
-        /// policy is in force.
-        /// </summary>
+        /// <summary>Sends a policy to LOTUS Guard. Returns true once the policy is in force.</summary>
         private async Task<bool> Save(Policy next, bool followSettings)
         {
             if (next == null) return false;
-            if (sessionPassword != null && DateTime.UtcNow - sessionPasswordUsed > PasswordMemory)
+            SaveResult result;
+            try
             {
-                sessionPassword = null;
+                result = await Task.Run(() => backend.SavePolicy(next));
             }
-            string password = sessionPassword ?? "";
-            string newPassword = null;
-
-            for (int round = 0; round < 12; round++)
+            catch (Exception ex)
             {
-                SaveResult result;
-                try
-                {
-                    string p = password, n = newPassword;
-                    result = await Task.Run(() => backend.SavePolicy(next, p, n));
-                }
-                catch (Exception ex)
-                {
-                    ShowMessage("THE POLICY WAS NOT SAVED", ex.Message);
-                    return false;
-                }
-
-                if (result.Ok)
-                {
-                    if (newPassword != null) Remember(newPassword);
-                    else if (password.Length > 0) Remember(password);
-                    vm.Accepted(next, followSettings);
-                    Refresh();
-                    return true;
-                }
-
-                switch (result.Code)
-                {
-                    case GuardProtocol.ErrPasswordNeeded:
-                    case GuardProtocol.ErrWrongPassword:
-                    case GuardProtocol.ErrLockedOut:
-                    {
-                        sessionPassword = null;
-                        PasswordAnswer answer = await AskPassword(new ConfirmRequest
-                        {
-                            Title = "LOTUS PASSWORD",
-                            Intro = "This change needs the LOTUS password.",
-                            ConfirmText = "CONTINUE",
-                            Ask = PasswordAsk.Enter,
-                            Error = result.Code == GuardProtocol.ErrPasswordNeeded ? "" : result.Message
-                        });
-                        if (answer == null) return false;
-                        password = answer.Current;
-                        break;
-                    }
-                    case GuardProtocol.ErrNewPasswordNeeded:
-                    case GuardProtocol.ErrWeakPassword:
-                    {
-                        PasswordAnswer answer = await AskPassword(new ConfirmRequest
-                        {
-                            Title = "SET A PASSWORD",
-                            Intro = "Choose a LOTUS password before arming. Every later change to the policy asks " +
-                                    "for it, and so does removing LOTUS. LOTUS cannot recover it if it is lost.",
-                            ConfirmText = "SET AND ARM",
-                            Ask = PasswordAsk.Create,
-                            Error = result.Code == GuardProtocol.ErrWeakPassword ? result.Message : ""
-                        });
-                        if (answer == null) return false;
-                        newPassword = answer.New;
-                        break;
-                    }
-                    default:
-                        ShowMessage("THE POLICY WAS NOT SAVED", result.Message);
-                        Refresh();
-                        return false;
-                }
+                ShowMessage("THE POLICY WAS NOT SAVED", ex.Message);
+                return false;
             }
+
+            if (result.Ok)
+            {
+                vm.Accepted(next, followSettings);
+                Refresh();
+                return true;
+            }
+            ShowMessage("THE POLICY WAS NOT SAVED", result.Message);
+            Refresh();
             return false;
-        }
-
-        /// <summary>Shows a dialog with password fields. Returns null when it was cancelled.</summary>
-        private async Task<PasswordAnswer> AskPassword(ConfirmRequest request)
-        {
-            if (!await Confirm(request)) return null;
-            var answer = new PasswordAnswer { Current = OverlayPwCurrent.Password, New = OverlayPwNew.Password };
-            ClearPasswordBoxes();
-            return answer;
-        }
-
-        private void ClearPasswordBoxes()
-        {
-            OverlayPwCurrent.Clear();
-            OverlayPwNew.Clear();
-            OverlayPwRepeat.Clear();
         }
 
         // ---------- confirmation overlay ----------
@@ -406,9 +283,7 @@ namespace Lotus.App
             overlayResult = new TaskCompletionSource<bool>();
             Body.IsEnabled = false; // keeps the keyboard out of the page behind the dialog
             Overlay.Visibility = Visibility.Visible;
-            if (overlayAsk == PasswordAsk.Enter || overlayAsk == PasswordAsk.Change) OverlayPwCurrent.Focus();
-            else if (overlayAsk == PasswordAsk.Create) OverlayPwNew.Focus();
-            else OverlayConfirm.Focus();
+            OverlayConfirm.Focus();
         }
 
         /// <summary>Fills in the dialog without waiting for an answer. Used for screenshots.</summary>
@@ -436,19 +311,8 @@ namespace Lotus.App
             OverlayWarning.Visibility = Visible(request.Warning.Length > 0);
             OverlayWarningText.Text = request.Warning;
 
-            overlayAsk = request.Ask;
-            ClearPasswordBoxes();
-            OverlayPasswords.Visibility = Visible(request.Ask != PasswordAsk.None);
-            OverlayPwCurrentRow.Visibility = Visible(request.Ask == PasswordAsk.Enter || request.Ask == PasswordAsk.Change);
-            OverlayPwNewRow.Visibility = Visible(request.Ask == PasswordAsk.Create || request.Ask == PasswordAsk.Change);
-            OverlayPwRepeatRow.Visibility = OverlayPwNewRow.Visibility;
-            OverlayPwCurrentLabel.Text = request.Ask == PasswordAsk.Change ? "CURRENT PASSWORD" : "PASSWORD";
-            OverlayPwError.Text = request.Error ?? "";
-            OverlayPwError.Visibility = Visible(!string.IsNullOrEmpty(request.Error));
-
             OverlayConfirm.Content = request.ConfirmText;
             OverlayConfirm.Style = (Style)FindResource(request.Danger ? "Btn.Danger" : "Btn.Primary");
-            OverlayConfirm.IsDefault = request.Ask != PasswordAsk.None;
             OverlayCancel.Visibility = Visible(request.ConfirmText != "OK");
         }
 
@@ -461,12 +325,6 @@ namespace Lotus.App
         public void HideOverlay()
         {
             CloseOverlay(false);
-        }
-
-        public void FillPasswordsForScreenshot()
-        {
-            OverlayPwNew.Password = "demo password";
-            OverlayPwRepeat.Password = "demo password";
         }
 
         private static Visibility Visible(bool on)
@@ -492,28 +350,6 @@ namespace Lotus.App
 
         private void OnOverlayConfirm(object sender, RoutedEventArgs e)
         {
-            // A new password is checked here, so a typing mistake never leaves the window.
-            if (overlayAsk == PasswordAsk.Create || overlayAsk == PasswordAsk.Change)
-            {
-                string problem = PasswordRecord.Problem(OverlayPwNew.Password);
-                if (problem == null && OverlayPwNew.Password != OverlayPwRepeat.Password)
-                {
-                    problem = "The two passwords are not the same.";
-                }
-                if (problem != null)
-                {
-                    OverlayPwError.Text = problem;
-                    OverlayPwError.Visibility = Visibility.Visible;
-                    return;
-                }
-            }
-            if ((overlayAsk == PasswordAsk.Enter || overlayAsk == PasswordAsk.Change) &&
-                OverlayPwCurrent.Password.Length == 0)
-            {
-                OverlayPwError.Text = "Enter the LOTUS password.";
-                OverlayPwError.Visibility = Visibility.Visible;
-                return;
-            }
             CloseOverlay(true);
         }
 
@@ -526,7 +362,6 @@ namespace Lotus.App
         {
             Overlay.Visibility = Visibility.Collapsed;
             Body.IsEnabled = true;
-            if (!result) ClearPasswordBoxes();
             TaskCompletionSource<bool> pending = overlayResult;
             overlayResult = null;
             pending?.TrySetResult(result);

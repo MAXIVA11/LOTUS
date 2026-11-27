@@ -22,7 +22,6 @@ namespace Lotus.Setup
         private readonly Action<string> fileLog;
         private readonly ObservableCollection<string> lines = new ObservableCollection<string>();
         private Stage stage = Stage.Welcome;
-        private bool passwordNeeded;
 
         /// <summary>0 when everything worked, 1 after a failure, 2 after warnings, 3 when cancelled.</summary>
         public int ExitCode { get; private set; } = 3;
@@ -54,7 +53,6 @@ namespace Lotus.Setup
                 WelcomePath.Text = "Removes " + Installer.InstallDir;
                 PrimaryButton.Content = "REMOVE";
                 PrimaryButton.Style = (Style)FindResource("Btn.Danger");
-                AskForPasswordIfSet(false);
                 return;
             }
 
@@ -82,22 +80,11 @@ namespace Lotus.Setup
                 WelcomeNote.Text = "This copy of LOTUS-Setup was built without the program files. Build it with build.ps1.";
                 PrimaryButton.IsEnabled = false;
             }
-            AskForPasswordIfSet(update);
-        }
-
-        /// <summary>Updating or removing a protected LOTUS needs its password.</summary>
-        private void AskForPasswordIfSet(bool update)
-        {
-            if (!uninstall && !update) return;
-            Installer.PasswordState state = Installer.ReadPasswordState();
-            if (state.Lockdown && !uninstall)
+            if (update && Installer.IsLockedDown())
             {
                 WelcomeNote.Text = "LOTUS is locked down because its policy store was damaged. This update resets it: " +
-                                   "LOTUS starts disarmed again and you set a new policy and password.";
+                                   "LOTUS starts disarmed again and you set a new policy.";
             }
-            passwordNeeded = state.Needed;
-            PasswordPanel.Visibility = passwordNeeded ? Visibility.Visible : Visibility.Collapsed;
-            if (passwordNeeded) Loaded += (s, e) => PasswordField.Focus();
         }
 
         private async void OnPrimary(object sender, RoutedEventArgs e)
@@ -105,7 +92,6 @@ namespace Lotus.Setup
             switch (stage)
             {
                 case Stage.Welcome:
-                    if (passwordNeeded && !await PasswordIsRight()) break;
                     await Work();
                     break;
                 case Stage.Done when !uninstall:
@@ -123,25 +109,6 @@ namespace Lotus.Setup
             Close();
         }
 
-        /// <summary>Checks the password before any work starts, so a typing mistake changes nothing.</summary>
-        private async Task<bool> PasswordIsRight()
-        {
-            string entered = PasswordField.Password;
-            PrimaryButton.IsEnabled = false;
-            string problem = await Task.Run(() => Installer.CheckPassword(entered));
-            PrimaryButton.IsEnabled = true;
-            if (problem == null)
-            {
-                PasswordError.Visibility = Visibility.Collapsed;
-                return true;
-            }
-            PasswordError.Text = problem;
-            PasswordError.Visibility = Visibility.Visible;
-            PasswordField.Clear();
-            PasswordField.Focus();
-            return false;
-        }
-
         private async Task Work()
         {
             stage = Stage.Working;
@@ -153,9 +120,7 @@ namespace Lotus.Setup
             SecondaryButton.Visibility = Visibility.Collapsed;
             CloseButton.IsEnabled = false;
 
-            var installer = new Installer(Log) { Password = PasswordField.Password };
-            PasswordField.Clear();
-            PasswordPanel.Visibility = Visibility.Collapsed;
+            var installer = new Installer(Log);
             string failure = await RunInBackground(() =>
             {
                 fileLog(uninstall ? "=== uninstall ===" : "=== install ===");

@@ -119,12 +119,7 @@ namespace Lotus.Setup
 
         private static int RunQuiet(bool uninstall)
         {
-            // Without a window the password comes from the environment, where it does
-            // not show up in the list of running programs the way a command line does.
-            var installer = new Installer(WriteLog)
-            {
-                Password = Environment.GetEnvironmentVariable("LOTUS_PASSWORD") ?? ""
-            };
+            var installer = new Installer(WriteLog);
             try
             {
                 WriteLog(uninstall ? "=== quiet uninstall ===" : "=== quiet install ===");

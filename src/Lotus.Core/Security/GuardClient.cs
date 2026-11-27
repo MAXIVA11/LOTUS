@@ -17,9 +17,9 @@ namespace Lotus.Core
         public const int MaxMessageBytes = 512 * 1024;
 
         public const string OpStatus = "status";
-        public const string OpVerify = "verify";
+        /// <summary>The policy in force and the list of blocked devices.</summary>
+        public const string OpRead = "read";
         public const string OpApply = "apply";
-        public const string OpSetPassword = "set_password";
         public const string OpStop = "stop";
 
         /// <summary>Stop so that a newer version can be installed. The policy stays.</summary>
@@ -27,11 +27,8 @@ namespace Lotus.Core
         /// <summary>Release every device, delete the data and stop, because LOTUS is being removed.</summary>
         public const string PurposeUninstall = "uninstall";
 
-        public const string ErrWrongPassword = "wrong_password";
+        /// <summary>LOTUS 1.1 answers this when its password is set. Later versions have no password.</summary>
         public const string ErrPasswordNeeded = "password_needed";
-        public const string ErrNewPasswordNeeded = "new_password_needed";
-        public const string ErrWeakPassword = "weak_password";
-        public const string ErrLockedOut = "locked_out";
         public const string ErrLockdown = "lockdown";
         public const string ErrBadRequest = "bad_request";
         public const string ErrFailed = "failed";
@@ -47,10 +44,9 @@ namespace Lotus.Core
         public string Message = "";
         public Dictionary<string, object> Data = new Dictionary<string, object>();
 
-        public bool HasPassword => Json.GetBool(Data, "hasPassword", false);
         public bool Armed => Json.GetBool(Data, "armed", false);
         public bool Lockdown => Json.GetBool(Data, "lockdown", false);
-        public int RetryAfterSeconds => Json.GetInt(Data, "retryAfter", 0);
+        public string Version => Json.GetString(Data, "version", "");
 
         public static GuardReply Fail(string code, string message)
         {
@@ -67,9 +63,9 @@ namespace Lotus.Core
     }
 
     /// <summary>
-    /// Talks to the LOTUS Guard service. Every change to the policy goes this way:
-    /// the service checks the password and writes the policy itself, so there is no
-    /// file an administrator's editor could change.
+    /// Talks to the LOTUS Guard service. The policy is read and changed this way
+    /// and no other: the service keeps it in an encrypted store that nothing else
+    /// can read or write.
     /// </summary>
     public sealed class GuardClient
     {
@@ -91,45 +87,27 @@ namespace Lotus.Core
             return Send(new Dictionary<string, object> { ["op"] = GuardProtocol.OpStatus });
         }
 
-        public GuardReply Verify(string password)
+        /// <summary>Asks for the policy in force and the list of blocked devices.</summary>
+        public GuardReply Read()
         {
-            return Send(new Dictionary<string, object>
-            {
-                ["op"] = GuardProtocol.OpVerify,
-                ["password"] = password ?? ""
-            });
+            return Send(new Dictionary<string, object> { ["op"] = GuardProtocol.OpRead });
         }
 
-        /// <param name="policyJson">The policy as JSON text.</param>
-        /// <param name="newPassword">Sets the password in the same step. Needed the first time LOTUS is armed.</param>
-        public GuardReply Apply(string policyJson, string password, string newPassword = null)
+        /// <param name="policyJson">The policy as text, the way Policy.ToJson writes it.</param>
+        public GuardReply Apply(string policyJson)
         {
-            var request = new Dictionary<string, object>
+            return Send(new Dictionary<string, object>
             {
                 ["op"] = GuardProtocol.OpApply,
-                ["password"] = password ?? "",
                 ["policy"] = Json.Parse(policyJson)
-            };
-            if (!string.IsNullOrEmpty(newPassword)) request["newPassword"] = newPassword;
-            return Send(request);
-        }
-
-        public GuardReply SetPassword(string password, string newPassword)
-        {
-            return Send(new Dictionary<string, object>
-            {
-                ["op"] = GuardProtocol.OpSetPassword,
-                ["password"] = password ?? "",
-                ["newPassword"] = newPassword ?? ""
             });
         }
 
-        public GuardReply Stop(string password, string purpose)
+        public GuardReply Stop(string purpose)
         {
             return Send(new Dictionary<string, object>
             {
                 ["op"] = GuardProtocol.OpStop,
-                ["password"] = password ?? "",
                 ["purpose"] = purpose
             }, 120000);
         }
