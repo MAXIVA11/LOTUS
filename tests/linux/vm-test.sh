@@ -155,6 +155,7 @@ copy_in() {
     local options=(-q -i "$work/key" -P "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
     scp "${options[@]}" -r "$package" lotus@127.0.0.1:release
     scp "${options[@]}" "$here/guest-tool.sh" lotus@127.0.0.1:t
+    scp "${options[@]}" "$here/tui-drive.py" lotus@127.0.0.1:tui-drive.py
     g "sudo install -m 0755 t /usr/local/bin/t"
 }
 copy_in
@@ -213,6 +214,48 @@ check "LOTUS lists the stick as storage" "sudo lotus devices | grep -A1 'QEMU US
 check "LOTUS lists the keyboard as an input device" "sudo lotus devices | grep -q 'ALLOWED.*Input'"
 check "no controller is held shut" "[ \"\$(t defaults)\" = '1 ' ]"
 
+# ---------------------------------------------------------------- the interactive interface
+
+section "The interactive interface"
+# "lotus ui --frame" presses the given keys and prints the screen once. That
+# drives the real interface against the real daemon without a terminal.
+ui() { g "sudo lotus ui --frame --plain --size 100x30 --keys '$1'"; }
+check "without a terminal, lotus on its own prints the status as before" "sudo lotus </dev/null | grep -q 'STATUS *DISARMED'"
+check_not "and the interface says it needs a terminal" "sudo lotus ui </dev/null"
+check "the first screen is the control page of a disarmed LOTUS" "sudo lotus ui --frame --plain --size 100x30 | grep -q 'REMOVABLE STORAGE' && sudo lotus ui --frame --plain --size 100x30 | grep -q 'CONNECTED 2'"
+check "it fits a terminal of 80 by 24" "sudo lotus ui --frame --plain --size 80x24 | grep -q 'APPLY' && [ \"\$(sudo lotus ui --frame --plain --size 80x24 | wc -l)\" = 24 ]"
+check "the devices page shows the stick with its ID" "sudo lotus ui --frame --plain --size 100x30 --keys 2 | grep -q 'ALLOWED *QEMU USB HARDDRIVE' && sudo lotus ui --frame --plain --size 100x30 --keys 2 | grep -q $STICK1"
+check "someone who is not root gets the screen that says there is no answer" "lotus ui --frame --plain --size 100x30 | grep -q 'NO ANSWER FROM THE LOTUS DAEMON'"
+
+screen=$(ui "space down right right a")
+if printf '%s' "$screen" | grep -q 'APPLY POLICY' && printf '%s' "$screen" | grep -q 'QEMU USB HARDDRIVE'; then ok "choosing block and pressing apply lists the stick that would be switched off"; else bad "choosing block and pressing apply lists the stick that would be switched off" "$screen"; fi
+check "until the answer is yes nothing has changed" "sudo lotus status | grep -q DISARMED && t auth $STICK1 | grep -qx 1"
+screen=$(ui "space down right right a left enter")
+if printf '%s' "$screen" | grep -q 'Applied. LOTUS is armed.'; then ok "confirming in the interface arms LOTUS"; else bad "confirming in the interface arms LOTUS" "$screen"; fi
+check "and the kernel has switched the stick off" "t wait-auth $STICK1 0 && t wait-no-block $STICK1 && sudo lotus status | grep -q ARMED"
+screen=$(ui "2 down t")
+if printf '%s' "$screen" | grep -q 'QEMU USB HARDDRIVE is trusted.'; then ok "pressing t on the stick in the devices page trusts it"; else bad "pressing t on the stick in the devices page trusts it" "$screen"; fi
+check "and the stick is back with its disk" "t wait-auth $STICK1 1 && t wait-block $STICK1"
+check "the trusted page lists it" "sudo lotus ui --frame --plain --size 100x30 --keys 3 | grep -q 'THIS DEVICE' && sudo lotus ui --frame --plain --size 100x30 --keys 3 | grep -q $STICK1"
+screen=$(ui "3 n left text:0403 tab text:Serial%20adapters enter")
+if printf '%s' "$screen" | grep -q 'Every device from vendor 0403 is trusted.' && printf '%s' "$screen" | grep -q 'Serial adapters'; then ok "a vendor typed into the form is added with its name"; else bad "a vendor typed into the form is added with its name" "$screen"; fi
+check "the command line sees the same list" "sudo lotus trusted | grep -q 'WHOLE VENDOR *Serial adapters'"
+screen=$(ui "3 n text:printer enter")
+if printf '%s' "$screen" | grep -q 'ADD BY HAND' && printf '%s' "$screen" | grep -q 'A model is a vendor ID and a product ID'; then ok "something that is not an ID is refused in the form with a reason"; else bad "something that is not an ID is refused in the form with a reason" "$screen"; fi
+ui "3 down x" >/dev/null
+ui "3 x" >/dev/null
+check "x on the trusted page removes an entry at once, and asks first when a device would go off" "sudo lotus trusted | grep -q $STICK1 && ! sudo lotus trusted | grep -q VID_0403"
+ui "3 x left enter" >/dev/null
+check "confirmed, the stick is untrusted and off again" "sudo lotus trusted | grep -q 'Nothing is trusted yet' && t wait-auth $STICK1 0"
+ui "space down left left a enter" >/dev/null
+check "disarming and allowing storage again in the interface puts everything back" "sudo lotus status | grep -q DISARMED && sudo lotus status | grep -Eq 'STORAGE +ALLOW' && t wait-auth $STICK1 1 && t wait-block $STICK1"
+check "the activity page has what happened" "sudo lotus ui --frame --plain --size 100x30 --keys 4 | grep -q 'BLOCKED *QEMU USB HARDDRIVE was blocked'"
+
+# The same program at a real terminal: a pseudo terminal with a person's keys.
+drive=$(g "python3 tui-drive.py" 2>&1)
+printf '%s\n' "$drive" | sed 's/^/    /'
+if printf '%s' "$drive" | grep -q '^FAIL' || ! printf '%s' "$drive" | grep -q '^PASS'; then bad "at a real terminal the interface starts, reacts to keys and hands the terminal back"; else ok "at a real terminal the interface starts, reacts to keys and hands the terminal back"; fi
+
 # ---------------------------------------------------------------- storage blocked
 
 section "Storage blocked"
@@ -238,7 +281,7 @@ check "the kernel says it held the device back" "sudo dmesg | grep -q 'not autho
 check_not "no storage driver ever touched it" "sudo dmesg | grep -Eq 'usb-storage|scsi host|Attached SCSI|sd [0-9]'"
 check "it never had a disk" "t no-block $STICK2 && t not-configured $STICK2"
 check "LOTUS knows what it is all the same" "sudo lotus devices | grep -B1 $STICK2 | grep -q 'BLOCKED.*Storage'"
-check "the log has the block" "sudo lotus log 50 | grep -c 'was blocked' | grep -qx 2"
+check "the newest lines of the log have the block" "sudo lotus log 4 | grep -q 'QEMU USB HARDDRIVE was blocked'"
 
 section "Strict mode: a new device the policy allows is switched on"
 g "sudo dmesg -C"

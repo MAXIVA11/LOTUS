@@ -71,7 +71,7 @@ LOTUS runs on Windows 10 (version 1607 or newer) and Windows 11. It uses the .NE
 
 ## Linux
 
-LOTUS for Linux has the same rules, the same decision engine and the same encrypted store. It has no window: a daemon enforces the policy, and you set it in a terminal.
+LOTUS for Linux has the same rules, the same decision engine and the same encrypted store. A daemon enforces the policy, and you set it in a terminal.
 
 Download `lotus-<version>-linux-x64.tar.gz` from the [releases page](https://github.com/MAXIVA11/LOTUS/releases).
 
@@ -80,6 +80,16 @@ tar -xzf lotus-*-linux-x64.tar.gz
 cd lotus-*-linux-x64
 sudo ./install.sh
 ```
+
+```sh
+sudo lotus
+```
+
+<p align="center">
+  <img src="docs/images/linux-control.png" width="100%" alt="The terminal interface of LOTUS on Linux, showing the Control page: the status ARMED, the master switch, the two rules, the Apply button and the latest activity.">
+</p>
+
+`sudo lotus` opens an interactive interface in the terminal with the same five pages as the Windows app, driven with the keyboard. Every setting is also a command, for scripts:
 
 ```sh
 sudo lotus devices

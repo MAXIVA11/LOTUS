@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Lotus.Core;
+using Lotus.Linux.Tui;
 
 namespace Lotus.Linux
 {
@@ -24,6 +25,14 @@ namespace Lotus.Linux
 
         private static int Main(string[] args)
         {
+            try
+            {
+                // What is printed is UTF-8, whatever the console would pick by itself.
+                Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+            }
+            catch (Exception ex) when (ex is IOException || ex is System.Security.SecurityException)
+            {
+            }
             var rest = new List<string>();
             for (int i = 0; i < args.Length; i++)
             {
@@ -40,12 +49,16 @@ namespace Lotus.Linux
                 }
             }
 
-            string command = rest.Count > 0 ? rest[0].ToLowerInvariant() : "status";
+            // On its own, at a terminal, "lotus" opens the interactive interface.
+            // In a script or a pipe it prints the status, as before.
+            bool atTerminal = !Console.IsInputRedirected && !Console.IsOutputRedirected;
+            string command = rest.Count > 0 ? rest[0].ToLowerInvariant() : atTerminal ? "ui" : "status";
             try
             {
                 switch (command)
                 {
                     case "daemon": return RunDaemon();
+                    case "ui": return RunUi(rest, atTerminal);
                     case "status": return Status();
                     case "devices": return Devices();
                     case "arm": return Change(p => p.Armed = true, "LOTUS is armed.");
@@ -174,9 +187,49 @@ namespace Lotus.Linux
             }
         }
 
+        // ================= the interactive interface =================
+
+        private static int RunUi(List<string> rest, bool atTerminal)
+        {
+            LotusPaths.OverrideDataDir(stateDir);
+            var session = new DaemonSession(Read, next => Client().Apply(next));
+
+            // "lotus ui --frame" draws one screen and ends. The tests and the
+            // pictures in the documentation use it: --size 100x30, --keys "2 down t", --plain.
+            if (rest.Contains("--frame"))
+            {
+                int width = 100, height = 30;
+                string size = After(rest, "--size");
+                if (size != null)
+                {
+                    string[] parts = size.ToLowerInvariant().Split('x');
+                    if (parts.Length != 2 || !int.TryParse(parts[0], out width) || !int.TryParse(parts[1], out height) ||
+                        width < 20 || height < 5 || width > 400 || height > 200)
+                    {
+                        Ui.Error("Give the size as columns and rows, for example 100x30.");
+                        return 2;
+                    }
+                }
+                return TuiRunner.Frame(session, LotusPaths.Version, width, height, After(rest, "--keys"),
+                    rest.Contains("--plain"), !rest.Contains("--ascii"));
+            }
+            if (!atTerminal)
+            {
+                Ui.Error("The interactive interface needs a terminal. In a script, use the commands: lotus help");
+                return 2;
+            }
+            return TuiRunner.Run(session, LotusPaths.Version);
+        }
+
+        private static string After(List<string> rest, string option)
+        {
+            int index = rest.IndexOf(option);
+            return index >= 0 && index + 1 < rest.Count ? rest[index + 1] : null;
+        }
+
         // ================= reading =================
 
-        private sealed class State
+        internal sealed class State
         {
             public Policy Policy;
             public Ledger Ledger;
@@ -190,7 +243,7 @@ namespace Lotus.Linux
             return new UnixControlClient(socketPath);
         }
 
-        private static State Read()
+        internal static State Read()
         {
             GuardReply reply = Client().Read();
             if (!reply.Ok) throw new GuardUnavailableException(reply.Message.Length > 0 ? reply.Message : "The LOTUS daemon refused.");
@@ -217,15 +270,19 @@ namespace Lotus.Linux
         {
             State state = Read();
             Ui.Banner();
+            string word = state.Lockdown ? "LOCKED DOWN" : state.Policy.Armed ? "ARMED" : "DISARMED";
+            string wordColour = state.Lockdown ? Ui.Pink : state.Policy.Armed ? Ui.Cyan : Ui.Yellow;
+            if (Ui.Fancy)
+            {
+                // At a terminal the status is spelled out in large letters, as in the interface.
+                foreach (string row in TuiApp.BigRows(word)) Console.WriteLine("  " + Ui.Paint(row, "1;" + wordColour));
+                Console.WriteLine();
+            }
+            Ui.Line("STATUS", word, wordColour);
             if (state.Lockdown)
             {
-                Ui.Line("STATUS", "LOCKED DOWN", Ui.Pink);
                 Ui.Note("The policy store was damaged or removed. Storage and untrusted USB devices are blocked.");
                 Ui.Note("Run the LOTUS installer again to reset it.");
-            }
-            else
-            {
-                Ui.Line("STATUS", state.Policy.Armed ? "ARMED" : "DISARMED", state.Policy.Armed ? Ui.Cyan : Ui.Yellow);
             }
             Ui.Line("STORAGE", state.Policy.Storage == StorageMode.Block ? "BLOCK"
                 : state.Policy.Storage == StorageMode.ReadOnly ? "READ-ONLY" : "ALLOW",
@@ -240,6 +297,11 @@ namespace Lotus.Linux
             if (!state.Policy.Armed && !state.Lockdown)
             {
                 Ui.Note("Nothing is blocked while LOTUS is disarmed. Choose the rules, then run: lotus arm");
+            }
+            if (Ui.Fancy)
+            {
+                Console.WriteLine();
+                Ui.Note("Run \"lotus\" on its own for the interactive interface.");
             }
             return 0;
         }
@@ -287,8 +349,8 @@ namespace Lotus.Linux
                         colour = device.Started ? Ui.Green : Ui.Yellow;
                         break;
                 }
-                Console.WriteLine(Ui.Paint(number.ToString().PadLeft(3), Ui.Dim) + "  " + Ui.Paint(label.PadRight(8), colour) +
-                                  "  " + Ui.Paint(Shorten(device.Name, 34).PadRight(34), Ui.Text) + "  " +
+                Console.WriteLine(Ui.Paint(number.ToString().PadLeft(3), Ui.Dim) + "  " + Ui.Chip(label.PadRight(8), colour) +
+                                  "  " + Ui.Paint(Shorten(device.Name, 34).PadRight(34), "1;" + Ui.Text) + "  " +
                                   Ui.Paint(string.Join(", ", UsbClassifier.Labels(device.Kinds)), Ui.Dim));
                 Console.WriteLine("     " + Ui.Paint(device.InstanceId, Ui.Dim) +
                                   (device.BuiltIn ? Ui.Paint("  built in", Ui.Dim) : "") +
@@ -307,7 +369,9 @@ namespace Lotus.Linux
         private static string Shorten(string text, int length)
         {
             text = text ?? "";
-            return text.Length <= length ? text : text.Substring(0, length - 1) + "…";
+            if (text.Length <= length) return text;
+            // The mark for "cut off" is one character where the terminal can show it.
+            return TuiRunner.TerminalShowsUnicode() ? text.Substring(0, length - 1) + "…" : text.Substring(0, length - 2) + "..";
         }
 
         private static int ShowLog(string countText)
@@ -658,7 +722,10 @@ namespace Lotus.Linux
         private static void Help()
         {
             Ui.Banner();
-            Console.WriteLine(@"  lotus status                    What is in force right now.
+            Console.WriteLine(@"  lotus                           Open the interactive interface: the pages of the Windows
+                                  app in your terminal, driven with the keyboard.
+
+  lotus status                    What is in force right now.
   lotus devices                   The connected USB devices and what the policy says about each.
   lotus log [lines]               The activity log.
 
@@ -696,20 +763,44 @@ namespace Lotus.Linux
         public const string Text = "38;2;244;244;246";
         public const string Dim = "38;2;141;141;163";
 
+        // Colours at a terminal, none in a pipe. NO_COLOR switches them off and
+        // CLICOLOR_FORCE=1 switches them on wherever the output goes.
         private static readonly bool Colour =
-            !Console.IsOutputRedirected && Environment.GetEnvironmentVariable("NO_COLOR") == null &&
-            Environment.GetEnvironmentVariable("TERM") != "dumb";
+            Environment.GetEnvironmentVariable("CLICOLOR_FORCE") == "1" ||
+            (!Console.IsOutputRedirected && Environment.GetEnvironmentVariable("NO_COLOR") == null &&
+             Environment.GetEnvironmentVariable("TERM") != "dumb");
+
+        /// <summary>Colours and a terminal that can show block characters: the output may look like the interface.</summary>
+        public static readonly bool Fancy = Colour && TuiRunner.TerminalShowsUnicode();
 
         public static string Paint(string text, string colour)
         {
             return Colour ? "\u001b[" + colour + "m" + text + "\u001b[0m" : text;
         }
 
+        /// <summary>A label on a coloured block, like the state of a device in the interface.</summary>
+        public static string Chip(string text, string colour)
+        {
+            if (!Colour) return text;
+            // The colour comes as a foreground code. The same numbers make the background.
+            return "\u001b[1;38;2;8;8;12;48" + colour.Substring(2) + "m " + text.TrimEnd() + " \u001b[0m" +
+                   new string(' ', Math.Max(0, text.Length - text.TrimEnd().Length));
+        }
+
         public static void Banner()
         {
             Console.WriteLine();
-            Console.WriteLine("  " + Paint("LOTUS", "1;" + Cyan) + Paint("  //  LOCAL OPERATIONAL TRUSTED USB SYSTEM", Dim));
-            Console.WriteLine("  " + Paint("/ / / / / / / / / / / / / / / / / / / / / / / /", Yellow));
+            if (Fancy)
+            {
+                Console.WriteLine("  " + Paint(new string('▞', 28), Yellow));
+                Console.WriteLine("  " + Paint("◢◣", "1;" + Pink) + " " + Paint("LOTUS", "1;" + Cyan) +
+                                  Paint("  //  LOCAL OPERATIONAL TRUSTED USB SYSTEM", Dim));
+            }
+            else
+            {
+                Console.WriteLine("  " + Paint("LOTUS", "1;" + Cyan) + Paint("  //  LOCAL OPERATIONAL TRUSTED USB SYSTEM", Dim));
+                Console.WriteLine("  " + Paint("/ / / / / / / / / / / / / / / / / / / / / / / /", Yellow));
+            }
             Console.WriteLine();
         }
 

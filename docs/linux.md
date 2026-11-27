@@ -2,7 +2,7 @@
 
 LOTUS for Linux is a daemon and a command, `lotus`. The rules are the ones the Windows version has, decided by the same code: removable storage can be allowed, read-only or blocked, every other USB device can be allowed or limited to a trusted list, and the policy sits in the same encrypted store.
 
-There is no window. You set the policy with `sudo lotus ...` in a terminal.
+There is no window. `sudo lotus` opens an interactive interface in the terminal, with the pages the Windows app has, and every setting is also a command for scripts.
 
 ## What it needs
 
@@ -30,7 +30,42 @@ A new installation starts disarmed, with storage and every other device allowed,
 
 Running `install.sh` from a newer release updates LOTUS and keeps your policy.
 
+## The interactive interface
+
+```sh
+sudo lotus
+```
+
+<p align="center">
+  <img src="images/linux-control.png" width="100%" alt="The Control page of the terminal interface: the status ARMED in large letters, the master switch, the two rules with their choices, the box for refusing new devices, the Apply button and the latest activity.">
+</p>
+
+Run on its own at a terminal, `lotus` opens five pages: Control, Devices, Trusted, Activity and About. They hold what the pages of the Windows app hold, and work the same way: you change the settings, press Apply, and LOTUS lists the connected devices the new policy would switch off before anything happens.
+
+| Key | What it does |
+| --- | --- |
+| <kbd>1</kbd> to <kbd>5</kbd>, <kbd>Tab</kbd> | Change the page |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move between the settings, or through a list |
+| <kbd>←</kbd> <kbd>→</kbd>, <kbd>Space</kbd> | Change the setting that is marked |
+| <kbd>a</kbd> | Apply the changes on the Control page |
+| <kbd>t</kbd>, <kbd>m</kbd>, <kbd>u</kbd> | On Devices: trust the device, trust its model, take the trust away |
+| <kbd>n</kbd>, <kbd>x</kbd> | On Trusted: add an entry by hand, remove the entry |
+| <kbd>Esc</kbd> | Close a dialog, or drop changes that were not applied |
+| <kbd>q</kbd> | Leave |
+
+The keys of the page you are on are always shown at the bottom right.
+
+<p align="center">
+  <img src="images/linux-devices.png" width="100%" alt="The Devices page of the terminal interface: each connected device with its state, name, kind and ID, and a line that explains the device that is chosen.">
+</p>
+
+A question that could switch off something that works, such as applying a stricter policy or removing trust, starts with the safe answer selected. The interface needs a terminal of at least 80 columns by 24 rows. On the plain Linux console, which cannot show block characters, it draws with ordinary letters and signs.
+
+In a script or a pipe, `lotus` on its own prints the status, and the commands below do the rest.
+
 ## Your first policy
+
+In the interface: open `sudo lotus`, choose the two rules with the arrow keys, switch the master switch on and press <kbd>a</kbd>. The same with commands follows here.
 
 See what is connected:
 
@@ -63,6 +98,7 @@ A change that would switch off a device that works right now lists those devices
 
 | Command | What it does |
 | --- | --- |
+| `lotus` | Open the interactive interface |
 | `lotus status` | What is in force right now |
 | `lotus devices` | The connected USB devices and what the policy says about each |
 | `lotus log [lines]` | The activity log |
@@ -199,7 +235,7 @@ lotus --sysfs ./fake-sys --state ./state --socket ./lotus.sock status
 
 ## How it is tested
 
-`tests/Lotus.Linux.Tests` holds the unit tests. The tests of the shared core run there against the Linux build, and the Linux parts are tested on a made-up device tree: reading devices, the controller switch, the read-only rule, the socket, and the whole daemon from arming to removal.
+`tests/Lotus.Linux.Tests` holds the unit tests. The tests of the shared core run there against the Linux build, and the Linux parts are tested on a made-up device tree: reading devices, the controller switch, the read-only rule, the socket, the whole daemon from arming to removal, and every page and dialog of the interactive interface.
 
 `tests/linux/vm-test.sh` tests on a real kernel. It boots Ubuntu 24.04 under QEMU, once from an ordinary disk and once from an emulated USB disk, installs LOTUS from the release folder the way a user would, and plugs emulated devices into the machine's USB controller: three sticks, two keyboards, a mouse, a phone, a network adapter, a sound card, a smart card reader, a serial adapter and a hub. After each step it asks the kernel in the machine what happened. It checks, among other things, that:
 
@@ -212,6 +248,7 @@ lotus --sysfs ./fake-sys --state ./state --socket ./lotus.sock status
 - the policy survives a killed daemon and a restart of the computer
 - a damaged store locks LOTUS down and the installer resets it
 - removal leaves no file and no device switched off
+- the interactive interface arms LOTUS, trusts and untrusts a stick and adds a vendor by hand against the real daemon, and on a pseudo terminal it starts, reacts to keys and hands the terminal back
 - a machine that itself starts from a USB disk keeps that disk: it is not switched off under any rule, it stays writable in read-only mode, and the machine starts again with read-only mode on
 
 CI runs both on every change.
