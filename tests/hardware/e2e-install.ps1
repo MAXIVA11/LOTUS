@@ -995,7 +995,6 @@ try {
         Check 'without strict mode Windows has no installation restrictions' (-not (Test-Path $gateKey))
         Check 'the scan lists the keyboards and mice that are not USB devices' ($null -ne $scan.PSObject.Properties['otherInput'])
         Say "   keyboards and mice besides USB on this PC: $(if (@($scan.otherInput).Count) { @($scan.otherInput) -join ', ' } else { 'none' })"
-        Check 'the Windows event log has the block with its reason' (Wait-Until { @(Get-LogEntries 2100 $t0 | Where-Object { $_.Message -like "*$Target*" -and $_.Message -like '*nobody has approved it yet*' }).Count -ge 1 } 10)
 
         # The safety net must stay shut here: the keyboard and the mouse of this PC are trusted and work.
         Start-Sleep -Seconds 20
@@ -1011,6 +1010,9 @@ try {
         Check 'approving the target switches it on' ($reply.Ok -and (Wait-Until { $d = Get-Device $Target; $d.problem -eq 0 -and $d.state -eq 'Trusted' } 25)) "state=$((Get-Device $Target).state)"
         $reply = Send-Policy $approve
         Check 'taking the approval away makes it wait again' ($reply.Ok -and (Wait-Until { (Get-Device $Target).state -eq 'Blocked' } 25))
+        # Only now is the target switched off under this rule. When the rule came into force it was
+        # already off from the section before, and a device that stays off gets no second entry.
+        Check 'the Windows event log has the block with its reason' (Wait-Until { @(Get-LogEntries 2100 $t0 | Where-Object { $_.Message -like "*$Target*" -and $_.Message -like '*nobody has approved it yet*' }).Count -ge 1 } 10)
 
         # With strict mode any new device could be a keyboard, so Windows holds them all and LOTUS lets the allowed ones in.
         $strictApprove = $approve.Clone()
